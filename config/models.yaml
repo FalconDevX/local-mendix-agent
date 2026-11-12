@@ -1,0 +1,187 @@
+# Model catalogue. Every repo/file below was checked against the Hugging Face API on 2026-11-12
+# (existence, size, licence tag, not gated). Exact size and SHA-256 are fetched again from the
+# Hub at download time and verified after the download; nothing is trusted from this file.
+#
+# tools:  "template" = the GGUF chat template declares tool calls and llama-server (--jinja)
+#         turns them into OpenAI-style tool_calls. Reliability still depends on model size:
+#         small models call tools less reliably. The agent also parses <tool_call> text blocks.
+# ctx_max: maximum context from the model card. ctx actually used is llm.context_size.
+# min_ram_gb / min_vram_gb: rule of thumb = file size + ~1.5 GB for an 8k-16k context.
+#         min_vram_gb is for full GPU offload; with less VRAM layers are split to CPU RAM.
+
+models:
+  # ---------------------------------------------------------------- coding / chat
+  - id: qwen2.5-coder-1.5b
+    role: chat
+    tier: small
+    repo: Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF
+    file: qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+    quant: Q4_K_M
+    size_gb: 1.12
+    license: apache-2.0
+    ctx_max: 32768
+    tools: template
+    vision: false
+    min_ram_gb: 4
+    min_vram_gb: 2
+    notes: Very fast, CPU friendly. Fine for /ask and simple edits, weak at long multi-step tool use.
+
+  - id: qwen3-4b
+    role: chat
+    tier: small
+    repo: Qwen/Qwen3-4B-GGUF
+    file: Qwen3-4B-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 2.50
+    license: apache-2.0
+    ctx_max: 32768
+    tools: template
+    vision: false
+    min_ram_gb: 6
+    min_vram_gb: 4
+    notes: General model with solid tool calling for its size (thinking model, reasoning is hidden).
+
+  - id: qwen2.5-coder-7b
+    role: chat
+    tier: balanced
+    repo: Qwen/Qwen2.5-Coder-7B-Instruct-GGUF
+    file: qwen2.5-coder-7b-instruct-q4_k_m.gguf
+    quant: Q4_K_M
+    size_gb: 4.68
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 8
+    min_vram_gb: 6
+    notes: Recommended coding default for 8 GB VRAM or 16 GB RAM.
+
+  - id: qwen3-8b
+    role: chat
+    tier: balanced
+    repo: Qwen/Qwen3-8B-GGUF
+    file: Qwen3-8B-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 5.03
+    license: apache-2.0
+    ctx_max: 32768
+    tools: template
+    vision: false
+    min_ram_gb: 10
+    min_vram_gb: 7
+    notes: Best agent/tool-use behaviour in the balanced tier; good choice for /agent and /mendix.
+
+  - id: qwen2.5-coder-14b
+    role: chat
+    tier: quality
+    repo: Qwen/Qwen2.5-Coder-14B-Instruct-GGUF
+    file: qwen2.5-coder-14b-instruct-q4_k_m.gguf
+    quant: Q4_K_M
+    size_gb: 8.99
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 16
+    min_vram_gb: 11
+    notes: Highest code quality here. On 8 GB VRAM it runs partly on CPU (slow but usable with 32 GB RAM).
+
+  - id: qwen3-14b
+    role: chat
+    tier: quality
+    repo: Qwen/Qwen3-14B-GGUF
+    file: Qwen3-14B-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 9.00
+    license: apache-2.0
+    ctx_max: 32768
+    tools: template
+    vision: false
+    min_ram_gb: 16
+    min_vram_gb: 11
+    notes: Strongest planning/tool use in the catalogue.
+
+  # ---------------------------------------------------------------- vision
+  - id: qwen3-vl-4b
+    role: vision
+    tier: small
+    repo: Qwen/Qwen3-VL-4B-Instruct-GGUF
+    file: Qwen3VL-4B-Instruct-Q4_K_M.gguf
+    mmproj: mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
+    quant: Q4_K_M
+    size_gb: 2.95
+    license: apache-2.0
+    ctx_max: 32768
+    tools: template
+    vision: true
+    min_ram_gb: 6
+    min_vram_gb: 4
+    notes: Small screenshot reader. Needs a llama.cpp build with Qwen3-VL support (any 2026 release).
+
+  - id: qwen2.5-vl-7b
+    role: vision
+    tier: balanced
+    repo: ggml-org/Qwen2.5-VL-7B-Instruct-GGUF
+    file: Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf
+    mmproj: mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf
+    quant: Q4_K_M
+    size_gb: 5.53
+    license: apache-2.0
+    ctx_max: 32768
+    tools: none
+    vision: true
+    min_ram_gb: 10
+    min_vram_gb: 7
+    notes: Better at dense UI text (error dialogs, microflow labels).
+
+  - id: qwen3-vl-8b
+    role: vision
+    tier: quality
+    repo: Qwen/Qwen3-VL-8B-Instruct-GGUF
+    file: Qwen3VL-8B-Instruct-Q4_K_M.gguf
+    mmproj: mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf
+    quant: Q4_K_M
+    size_gb: 5.78
+    license: apache-2.0
+    ctx_max: 32768
+    tools: template
+    vision: true
+    min_ram_gb: 10
+    min_vram_gb: 7
+    notes: Best screenshot understanding in the catalogue.
+
+  # ---------------------------------------------------------------- embeddings
+  - id: nomic-embed-v1.5
+    role: embed
+    tier: small
+    repo: nomic-ai/nomic-embed-text-v1.5-GGUF
+    file: nomic-embed-text-v1.5.Q8_0.gguf
+    quant: Q8_0
+    size_gb: 0.15
+    license: apache-2.0
+    ctx_max: 2048
+    tools: none
+    vision: false
+    min_ram_gb: 1
+    min_vram_gb: 0
+    query_prefix: "search_query: "
+    doc_prefix: "search_document: "
+    notes: Default embedding model, runs on CPU.
+
+  - id: bge-small-en-v1.5
+    role: embed
+    tier: small
+    repo: CompendiumLabs/bge-small-en-v1.5-gguf
+    file: bge-small-en-v1.5-q8_0.gguf
+    quant: Q8_0
+    size_gb: 0.04
+    license: mit
+    ctx_max: 512
+    tools: none
+    vision: false
+    min_ram_gb: 1
+    min_vram_gb: 0
+    notes: Tiny English-only alternative (512-token chunks).
+
+# Not included on purpose: Qwen2.5-Coder-3B and Qwen2.5-VL-3B are published under the
+# non-commercial "Qwen Research" licence and are unsuitable for corporate use.
