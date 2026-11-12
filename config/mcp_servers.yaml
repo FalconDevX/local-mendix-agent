@@ -1,0 +1,21 @@
+# MCP configuration (rewritten by /mcp add and /mendix connect; comments here are regenerated).
+#
+# mendix: the official Mendix Studio Pro MCP server (Maia capabilities), Studio Pro 11.10+.
+#   Enable it in Studio Pro: Preferences > AI > MCP Server > Enable MCP Server, and note the port.
+#   Official docs: https://docs.mendix.com/refguide/studio-pro-mcp-server/
+#   Keys: enabled, port (as shown in Preferences / status bar), url (full URL, wins over port),
+#         auto_discover (probe the loopback ports of the running studiopro.exe, then candidate_ports),
+#         candidate_ports (default [7782]: community-reported, not stated in the official docs),
+#         timeout_s, tool_policy {tool: read|write|deny}.
+#   Only loopback hosts are ever accepted for Maia.
+#
+# servers: any other MCP servers.
+#   name:
+#     transport: http | stdio
+#     url: http://localhost:9000/mcp            (http)
+#     headers: {Authorization: "keyring:NAME"}  (secrets only as env:NAME or keyring:NAME references)
+#     command: C:/tools/server.exe, args: [...], env: {...}, cwd: ...   (stdio)
+#     enabled: true, timeout_s: 60, tool_policy: {tool: read|write|deny}
+mendix:
+  enabled: true
+servers: {}

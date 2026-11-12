@@ -1,0 +1,18 @@
+# Copy to settings.yaml to override defaults (the app also writes this file via /config).
+# data_dir: C:\Users\me\lma-data     # models, index, memory, snapshots, logs
+# project: C:\Projects\MyMendixApp
+mode: agent                          # ask | plan | agent | code | review | mendix | vision
+use_system_trust_store: true
+llm:
+  context_size: 16384                # tokens; lower it (8192) on machines with little RAM/VRAM
+  gpu_layers: -1                     # -1 = let llama.cpp fit layers into VRAM automatically, 0 = CPU only
+  temperature: 0.2
+  max_output_tokens: 2048
+  hf_endpoint: https://huggingface.co    # or a corporate Hugging Face mirror
+agent:
+  max_steps: 25
+  plan_first: true
+  auto_apply_edits: false            # true = write staged edits without asking
+  allow_shell: false                 # true = expose run_command (still asks every time)
+index:
+  watch_interval_s: 0                # >0 = re-index changed files every N seconds
