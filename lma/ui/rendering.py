@@ -1,4 +1,4 @@
-"""Rich rendering of agent events in a Claude Code like layout.
+"""Rich rendering of agent events (tool calls, results, spinner, plan checklist).
 
 Streaming works in two parts so nothing is ever printed twice:
   * finished markdown blocks are printed once and never touched again,

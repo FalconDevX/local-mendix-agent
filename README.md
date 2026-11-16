@@ -1,6 +1,6 @@
 # Local Mendix Agent
 
-A terminal AI coding agent in the spirit of Claude Code that runs **entirely on one Windows laptop**:
+A terminal AI coding agent that runs **entirely on one Windows laptop**:
 local GGUF models through llama.cpp, a multi-server MCP client with a dedicated integration for the
 official **Mendix Studio Pro MCP server (Maia)**, project indexing, staged edits with diff/apply/undo,
 persistent memory and screenshot understanding.
@@ -187,7 +187,7 @@ in every folder; anything outside these folders stays out of reach.
 
 ### Output
 
-The terminal follows the Claude Code layout: `●` tool call, `⎿` its result, a spinner with elapsed
+The terminal layout: `●` tool call, `⎿` its result, a spinner with elapsed
 time, the plan as a checklist. An answer is printed once, block by block; a model that starts
 repeating the same text or the same tool call is stopped (`llm.repeat_penalty` above 1.0 makes loops
 less likely). Glyphs adapt to the console; force a set with `/config ui.glyphs ascii|safe|unicode`.
@@ -218,7 +218,7 @@ Deliberate deviations from the original brief:
   over `127.0.0.1` only.
 - **Package is `lma/`, MCP code is `lma/mcpx/`.** A top-level `mcp/` folder would shadow the official
   `mcp` SDK.
-- **Rich + prompt_toolkit instead of Textual.** A scrolling REPL behaves like Claude Code and works
+- **Rich + prompt_toolkit instead of Textual.** A scrolling REPL works
   in every Windows terminal, including restricted ones.
 - **Direct HTTPS downloads instead of the `huggingface_hub` package** (one dependency less; same
   Hub, resumable, verified against the Hub's LFS SHA-256).
