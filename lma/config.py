@@ -172,6 +172,39 @@ def store_secret(name: str, secret: str) -> None:
     keyring.set_password(KEYRING_SERVICE, name, secret)
 
 
+def system_proxy(url: str = "https://github.com") -> str | None:
+    """The proxy Windows itself would use for `url`, when it comes from a PAC script or WPAD.
+
+    Browsers follow those automatically; Python only reads a statically configured proxy. Without
+    this a corporate laptop can open github.com in the browser while every download here times out.
+    Returns None when there is no automatic proxy configuration or the answer is "direct".
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import subprocess
+        import winreg
+
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        try:
+            pac = bool(winreg.QueryValueEx(key, "AutoConfigURL")[0])
+        except OSError:
+            pac = False
+        try:  # byte 8 of the connection blob: 0x04 = PAC script, 0x08 = automatic detection (WPAD)
+            blob = winreg.QueryValueEx(winreg.OpenKey(key, "Connections"), "DefaultConnectionSettings")[0]
+            auto = len(blob) > 8 and bool(blob[8] & 0x0C)
+        except OSError:
+            auto = False
+        if not (pac or auto):
+            return None
+        script = f"$u=[Uri]'{url}'; $p=[System.Net.WebRequest]::GetSystemWebProxy(); if(-not $p.IsBypassed($u)){{$p.GetProxy($u).AbsoluteUri}}"
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                             text=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+    except Exception:  # noqa: BLE001 - detection is best effort; the user can always set HTTPS_PROXY
+        return None
+    return out.rstrip("/") if out.startswith("http") and "github.com" not in out else None
+
+
 def prepare_network_env(settings: Settings) -> None:
     """Make sure loopback traffic never goes through a corporate proxy and that the
     OS certificate store (which contains corporate root CAs) is trusted.
@@ -185,6 +218,10 @@ def prepare_network_env(settings: Settings) -> None:
             if host not in cur:
                 cur.append(host)
         os.environ[var] = ",".join(cur)
+    if not any(os.environ.get(v) for v in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")):
+        proxy = system_proxy()  # the proxy the company configured in Windows (PAC/WPAD), nothing else
+        if proxy:
+            os.environ["HTTPS_PROXY"] = os.environ["HTTP_PROXY"] = proxy
     if settings.use_system_trust_store:
         try:
             import truststore
