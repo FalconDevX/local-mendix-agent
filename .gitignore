@@ -5,3 +5,7 @@ __pycache__/
 .pytest_cache/
 wheelhouse/
 config/settings.yaml
+KOMENDY*.txt
+CLAUDE.md
+CLAUDE.local.md
+.claude/
