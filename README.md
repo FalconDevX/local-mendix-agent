@@ -42,9 +42,13 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
 `setup.ps1` creates `.venv` and installs the dependencies from `requirements.txt` (all have official
-Windows wheels). Options for restricted networks:
+Windows wheels). It then runs `/download auto`: the llama.cpp runtime plus one chat, vision and
+embedding model picked for this machine (about 6-9 GB into `data\`), from Hugging Face or, where
+that is blocked, from the GitHub release `models` of this repository. Roles that already have a
+model are skipped; `-NoModels` skips the downloads. Options for restricted networks:
 
 ```powershell
+.\setup.ps1 -NoModels                                                   # Python environment only
 .\setup.ps1 -IndexUrl https://nexus.company/repository/pypi/simple     # corporate PyPI mirror
 .\setup.ps1 -Wheelhouse .\wheelhouse                                    # fully offline
 # build the wheelhouse on any machine with internet:
@@ -73,6 +77,14 @@ the files through an approved channel:
 - runtime: download `llama-<tag>-bin-win-<variant>-x64.zip` from the llama.cpp GitHub releases, then
   `/download runtime C:\path\llama-...zip` (for CUDA also pass `cudart-llama-bin-win-cuda-12.4-x64.zip`),
   or set `LMA_LLAMA_SERVER` to an approved `llama-server.exe`.
+- Hugging Face blocked, GitHub allowed: models can come from a **GitHub mirror**, a release named
+  `models` in this repository. On a machine that can reach Hugging Face, publish them once with
+  `.venv\Scripts\python.exe scripts\publish_models.py qwen3-8b nomic-embed-v1.5 qwen3-vl-4b`
+  (needs `gh auth login`; files are split into parts below GitHub's 2 GiB asset limit). On the
+  blocked machine `/download <id>` falls back to the mirror automatically (`llm.model_source: auto`),
+  joins the parts and verifies the SHA-256. `/download mirror` lists what the mirror has;
+  `/config llm.model_source github` skips Hugging Face completely; another repo:
+  `/config llm.models_repo owner/repo`.
 - models: copy a `.gguf` file anywhere and `/models add C:\models\model.gguf chat`
   (vision: `/models add model.gguf vision mmproj.gguf`).
 - proxy: set `HTTPS_PROXY`; corporate root CAs are taken from the Windows trust store.
@@ -131,8 +143,9 @@ message in that mode without switching.
 
 | | |
 |---|---|
-| Models | `/model`, `/models`, `/download` |
-| Project | `/project`, `/open`, `/index [--full]`, `/search`, `/read` |
+| Models | `/model` (pick from a list), `/models`, `/download <id>`, `/download hf:<owner>/<repo>/<file>.gguf [role]` |
+| Multi-agent | `/team [task]`, `/agents [on\|off \| model <role> <id\|default> \| parallel <n>]` |
+| Project | `/project`, `/open`, `/add-dir`, `/dirs`, `/remove-dir`, `/index [--full]`, `/search`, `/read` |
 | Editing | `/write`, `/edit`, `/diff`, `/apply`, `/reject`, `/undo`, `/history` |
 | MCP | `/mcp list|add|connect|disconnect|tools|inspect|test|call`, `/mendix ...` |
 | Memory | `/memory [search|project|global|add|forget|clear-session]`, `/context` |
@@ -147,6 +160,37 @@ Keys: `Alt+Enter` new line, `Tab` completion (commands, sub-commands, model ids,
 .\run.bat --project C:\repo -p "where is authentication implemented?" -m ask
 .\run.bat --project C:\repo -p "rename foo to bar everywhere" -m code --yes    # --yes approves and applies
 ```
+
+### Several folders in the context
+
+`/open` sets the project. `/add-dir <folder>` adds any other folder (another repo, a docs folder, a
+shared library); `/dirs` lists them, `/remove-dir <folder|name>` drops one. The list is remembered per
+project. Files of the project are addressed by relative path, files of an added folder by absolute
+path. Reading, `grep`, `/index` + semantic search and staged edits (with snapshot and `/undo`) work
+in every folder; anything outside these folders stays out of reach.
+
+### Multi-agent
+
+- `/team <task>` runs a fixed pipeline: the lead model splits the task, **explorers** (read-only)
+  investigate in parallel, **coder** / **mendix** workers build with what the explorers found, a
+  **reviewer** checks staged edits (added automatically when something was staged), the lead writes
+  the answer. `/team` alone switches the mode so every message goes through the pipeline.
+- In `/agent`, `/code` and `/mendix` the model also has a `delegate` tool and may hand sub-tasks to
+  sub-agents on its own (`/agents off` removes it). Small models rarely choose to delegate, which is
+  why `/team` exists.
+- Each sub-agent has its own conversation, so its work does not fill the lead's context window. It
+  cannot spawn further agents and is bound by the permissions of its role.
+- `/agents` lists the roles; `/agents model explorer <id>` gives a role its own model (for example a
+  small fast one for exploring). Models that do not fit in memory together are swapped, which costs
+  load time. `/agents parallel <n>` sets how many sub-agents run at once (default 2; they share one
+  llama-server).
+
+### Output
+
+The terminal follows the Claude Code layout: `●` tool call, `⎿` its result, a spinner with elapsed
+time, the plan as a checklist. An answer is printed once, block by block; a model that starts
+repeating the same text or the same tool call is stopped (`llm.repeat_penalty` above 1.0 makes loops
+less likely). Glyphs adapt to the console; force a set with `/config ui.glyphs ascii|safe|unicode`.
 
 ## How it works
 

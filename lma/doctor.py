@@ -15,6 +15,7 @@ import httpx
 
 from lma.core.state import AppState
 from lma.llm.hardware import detect, recommend_runtime
+from lma.llm.mirror import fetch_manifest, release_base
 from lma.llm.runtime import find_server, runtime_info
 
 PACKAGES = ["mcp", "pydantic", "pyyaml", "rich", "prompt_toolkit", "httpx", "psutil", "numpy", "pillow", "keyring", "truststore"]
@@ -127,7 +128,15 @@ async def run(state: AppState, inference: bool = True) -> list[Check]:
     add("Network", "Hugging Face", hf, f"{s.llm.hf_endpoint}: {hf_detail}")
     gh, gh_detail = _http_probe("https://github.com")
     add("Network", "GitHub (runtime downloads)", gh, gh_detail)
-    offline = hf != "ok"
+    try:
+        llm = s.llm
+        n = len(fetch_manifest(release_base(llm.github_web, llm.models_repo, llm.models_tag), timeout=8)["models"])
+        add("Network", "GitHub model mirror", "ok", f"{n} models in github.com/{s.llm.models_repo} release '{s.llm.models_tag}' "
+            f"(model_source: {s.llm.model_source})")
+    except Exception as exc:  # noqa: BLE001
+        status = "warn" if hf != "ok" else "info"
+        add("Network", "GitHub model mirror", status, str(exc).splitlines()[0][:300])
+    offline = hf != "ok" and gh != "ok"
     add("Network", "Offline capability", "info",
         ("External network unreachable. " if offline else "") +
         "Works offline: installed models, chat/agent, indexing, search, editing, memory, local MCP (Maia). "

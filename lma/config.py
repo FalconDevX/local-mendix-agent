@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -25,7 +25,14 @@ class LLMSettings(BaseModel):
     gpu_layers: int = -1  # -1 = auto (all layers that fit)
     temperature: float = 0.2
     max_output_tokens: int = 2048
+    repeat_penalty: float = 1.0  # >1.0 (e.g. 1.1) discourages small models from looping; 1.0 = off
     hf_endpoint: str = "https://huggingface.co"
+    # where /download gets models: auto = Hugging Face, falling back to the GitHub mirror when the Hub
+    # is unreachable; hf = Hub only; github = GitHub mirror only (networks that block Hugging Face)
+    model_source: Literal["auto", "hf", "github"] = "auto"
+    models_repo: str = "FalconDevX/local-mendix-agent"  # GitHub repo whose release holds the model mirror
+    models_tag: str = "models"
+    github_web: str = "https://github.com"
     github_api: str = "https://api.github.com"
     startup_timeout_s: int = 180
 
@@ -38,6 +45,14 @@ class AgentSettings(BaseModel):
     plan_first: bool = True
     auto_apply_edits: bool = False
     allow_shell: bool = False
+    multi_agent: bool = True  # expose the `delegate` tool so the agent can hand work to sub-agents
+    parallel_agents: int = 2  # sub-agents running at the same time (they share one local model server)
+    subagent_max_steps: int = 12
+    role_models: dict[str, str] = Field(default_factory=dict)  # sub-agent role -> model id (default: the chat model)
+
+
+class UISettings(BaseModel):
+    glyphs: str = "auto"  # auto | unicode | safe | ascii
 
 
 class ProjectSettings(BaseModel):
@@ -57,11 +72,13 @@ class Settings(BaseModel):
     data_dir: str = str(ROOT / "data")
     models_dir: str | None = None
     project: str | None = None
+    extra_dirs: dict[str, list[str]] = Field(default_factory=dict)  # project folder -> additional context folders
     mode: str = "agent"
     use_system_trust_store: bool = True
     llm: LLMSettings = Field(default_factory=LLMSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     index: ProjectSettings = Field(default_factory=ProjectSettings)
+    ui: UISettings = Field(default_factory=UISettings)
 
     # ---- derived paths -------------------------------------------------
     @property

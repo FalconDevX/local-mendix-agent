@@ -17,7 +17,8 @@ from prompt_toolkit.styles import Style
 
 from lma import __version__
 from lma.core.agent import Agent
-from lma.core.state import AppState
+from lma.core.roles import ROLES
+from lma.core.state import AppState, current_agent
 from lma.llm.runtime import find_server
 from lma.tools.image import IMAGE_SUFFIXES, load_image
 from lma.ui.commands import MODES, Commands
@@ -30,8 +31,9 @@ SUBCOMMANDS = {
     "/memory": ["search", "project", "global", "add", "forget", "clear-session"],
     "/models": ["delete", "add"], "/download": ["runtime"], "/model": ["chat", "vision", "embed"],
     "/attach": ["paste", "preview", "clear"], "/vision": ["paste"], "/index": ["--full"], "/config": ["secret"],
+    "/agents": ["on", "off", "model", "parallel"],
 }
-PATH_COMMANDS = ("/read", "/write", "/edit", "/open", "/attach", "/vision", "/reject")
+PATH_COMMANDS = ("/read", "/write", "/edit", "/open", "/attach", "/vision", "/reject", "/add-dir", "/remove-dir")
 
 
 class SlashCompleter(Completer):
@@ -60,13 +62,18 @@ class SlashCompleter(Completer):
             for name in self.state.mcp.connections:
                 if name.startswith(word):
                     yield Completion(name, start_position=-len(word))
-        at = re.search(r"@([\w./\\-]*)$", text)
+        if cmd == "/agents" and rest.startswith("model "):
+            options = list(ROLES) if rest.count(" ") == 1 else ["default", *self.state.llm.chat_models()]
+            for opt in options:
+                if opt.startswith(word):
+                    yield Completion(opt, start_position=-len(word))
+        at = re.search(r"@([\w./\\:-]*)$", text)
         if (cmd in PATH_COMMANDS and rest) or at:
             frag = at.group(1) if at else word
             yield from self._paths(frag)
 
     def _paths(self, frag: str):  # noqa: ANN202
-        root = self.state.root or Path.cwd()
+        root = self.state.root or Path.cwd()  # absolute fragments (other drives, added folders) work too
         base = (root / frag).parent if frag and not frag.endswith(("/", "\\")) else root / frag
         prefix = Path(frag).name if frag and not frag.endswith(("/", "\\")) else ""
         try:
@@ -85,17 +92,19 @@ def toolbar(state: AppState):  # noqa: ANN201
         others = sum(1 for n, c in state.mcp.connections.items() if c.connected and n != "mendix")
         pending = len(state.workspace.pending) if state.workspace else 0
         ctx = state.settings.llm.context_size
+        used = min(100, round(100 * state.context_tokens / ctx)) if ctx else 0
+        extra = len(state.workspace.extra) if state.workspace else 0
         parts = [
-            f"<b>/{state.mode}</b>", f"model: {models['chat']}",
-            f"Maia: {'<style fg=\"#5faf5f\">connected</style>' if mx.connected else '<style fg=\"#d75f5f\">offline</style>'}" + (f" +{others} MCP" if others else ""),
-            f"ctx: {state.context_tokens}/{ctx}",
-            f"project: {state.root.name if state.root else 'none'}",
+            f"<b>/{state.mode}</b>", f"{models['chat']}",
+            f"Maia {'<style fg=\"#5faf5f\">on</style>' if mx.connected else '<style fg=\"#d75f5f\">off</style>'}" + (f" +{others} MCP" if others else ""),
+            f"ctx {used}%",
+            f"{state.root.name if state.root else 'no project'}" + (f" +{extra} dir(s)" if extra else ""),
         ]
         if pending:
             parts.append(f"<style fg=\"#d7af5f\">{pending} staged</style>")
         if state.attachments:
             parts.append(f"{len(state.attachments)} image(s)")
-        return HTML(" | ".join(parts))
+        return HTML("  " + "  ·  ".join(parts) + "    <style fg=\"#6c6c6c\">/help · Alt+Enter new line · Ctrl+C cancel</style>")
     return render
 
 
@@ -104,7 +113,7 @@ def expand_mentions(text: str, state: AppState, ui: Renderer) -> str:
     if state.workspace is None:
         return text
     extra: list[str] = []
-    for m in re.finditer(r"(?<!\S)@([\w./\\-]+)", text):
+    for m in re.finditer(r"(?<!\S)@([\w./\\:-]+)", text):
         rel = m.group(1)
         try:
             full = state.workspace.resolve(rel)
@@ -129,11 +138,17 @@ def expand_mentions(text: str, state: AppState, ui: Renderer) -> str:
 
 
 def banner(state: AppState, ui: Renderer) -> None:
-    c = ui.console
-    c.print(f"[accent]Local Mendix Agent[/accent] [dim]v{__version__} - local models, Maia MCP, offline capable[/dim]")
     hw = state.llm.hardware
-    c.print(f"[dim]{hw.cpu} | RAM {hw.ram_total_gb} GB | {hw.gpu_name or 'CPU only'}"
-            f"{f' {hw.vram_total_gb} GB' if hw.gpu_name else ''} | /help for commands[/dim]")
+    folders = str(state.root) if state.root else "no project (/open <folder>)"
+    if state.workspace and state.workspace.extra:
+        folders += f"  +{len(state.workspace.extra)} more (/dirs)"
+    ui.banner(f"Local Mendix Agent v{__version__}", [
+        "local models · Maia MCP · works offline",
+        f"model: {state.llm.model_id('chat') or 'none installed'}   mode: /{state.mode}",
+        f"cwd:   {folders}",
+        f"{hw.cpu} · RAM {hw.ram_total_gb} GB · {hw.gpu_name or 'CPU only'}{f' {hw.vram_total_gb} GB' if hw.gpu_name else ''}",
+        "/help for commands · /team for multi-agent · @file to attach",
+    ])
 
 
 async def first_run_hints(state: AppState, ui: Renderer) -> None:
@@ -163,8 +178,9 @@ async def connect_servers(state: AppState, ui: Renderer, agent: Agent) -> None:
 
 
 async def repl(state: AppState) -> None:
-    ui = Renderer()
+    ui = Renderer(glyphs=state.settings.ui.glyphs)
     state.emit = ui.emit
+    approval_lock = asyncio.Lock()  # parallel sub-agents must not ask two questions at once
     agent = Agent(state)
     hist = state.settings.data_path / "input_history.txt"
     kb = KeyBindings()
@@ -200,11 +216,15 @@ async def repl(state: AppState) -> None:
             return await side.prompt_async(question)
 
     async def approver(tool: str, risk: str, summary: str) -> str:
-        ui.finish()
-        ui.console.print(f"[warn]Permission needed[/warn] ({risk}): [bold]{tool}[/bold]")
-        ui.console.print(f"  {summary}", markup=False)
-        ans = (await ask("  allow? [y]es / [n]o / [a]lways this session: ")).strip().lower()
-        return "a" if ans.startswith("a") else "y" if ans in ("y", "yes", "t", "tak") else "n"
+        async with approval_lock:
+            if tool in state.permissions.session_allow:  # answered "always" while this call was waiting
+                return "y"
+            ui.finish()
+            who = f" for {current_agent.get()}" if current_agent.get() else ""
+            ui.console.print(f"[warn]Permission needed{who}[/warn] ({risk}): [bold]{tool}[/bold]")
+            ui.console.print(f"  {summary}", markup=False)
+            ans = (await ask("  allow? [y]es / [n]o / [a]lways this session: ")).strip().lower()
+            return "a" if ans.startswith("a") else "y" if ans in ("y", "yes", "t", "tak") else "n"
 
     state.permissions.approver = approver
     commands = Commands(state, agent, ui, ask=ask)
@@ -225,8 +245,9 @@ async def repl(state: AppState) -> None:
                 line = await read_plain(f"{state.mode} > ")
             else:
                 with patch_stdout():
-                    line = await session.prompt_async(HTML(f"<mode>{state.mode}</mode> <prompt>&gt;</prompt> "),
-                                                      bottom_toolbar=toolbar(state), complete_while_typing=True)
+                    ui.console.print()
+                    line = await session.prompt_async(HTML(f"<prompt>{ui.g['prompt']}</prompt> "), bottom_toolbar=toolbar(state),
+                                                      complete_while_typing=True, prompt_continuation="  ")
         except KeyboardInterrupt:
             continue
         except EOFError:

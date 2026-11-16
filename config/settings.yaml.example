@@ -9,10 +9,19 @@ llm:
   temperature: 0.2
   max_output_tokens: 2048
   hf_endpoint: https://huggingface.co    # or a corporate Hugging Face mirror
+  model_source: auto                 # auto = Hugging Face, then the GitHub mirror | hf | github (Hugging Face blocked)
+  models_repo: FalconDevX/local-mendix-agent   # GitHub repo whose release 'models_tag' holds the mirror
+  models_tag: models
 agent:
   max_steps: 25
   plan_first: true
   auto_apply_edits: false            # true = write staged edits without asking
   allow_shell: false                 # true = expose run_command (still asks every time)
+  multi_agent: true                  # the agent may hand sub-tasks to sub-agents (delegate tool); /team works either way
+  parallel_agents: 2                 # sub-agents running at the same time
+  # role_models: {explorer: qwen3-1.7b}   # a different installed model per sub-agent role
+# extra_dirs: {'C:\Projects\MyMendixApp': ['C:\Projects\shared-lib']}   # written by /add-dir
+ui:
+  glyphs: auto                       # auto | unicode | safe | ascii
 index:
   watch_interval_s: 0                # >0 = re-index changed files every N seconds

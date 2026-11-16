@@ -36,7 +36,7 @@ def parse(argv: list[str] | None = None) -> argparse.Namespace:
 async def one_shot(args: argparse.Namespace) -> int:
     settings = load_settings()
     state = AppState(settings)
-    ui = Renderer(stream_markdown=False)
+    ui = Renderer(stream_markdown=False, glyphs=settings.ui.glyphs)
     state.emit = ui.emit
     state.permissions.auto_approve = args.yes
     agent = Agent(state)

@@ -101,6 +101,142 @@ models:
     min_vram_gb: 11
     notes: Strongest planning/tool use in the catalogue.
 
+  # ---------------------------------------------------------------- other vendors (verified 2026-11-12)
+  - id: qwen3-1.7b
+    role: chat
+    tier: small
+    repo: Qwen/Qwen3-1.7B-GGUF
+    file: Qwen3-1.7B-Q8_0.gguf
+    quant: Q8_0
+    size_gb: 1.83
+    license: apache-2.0
+    ctx_max: 32768
+    tools: template
+    vision: false
+    min_ram_gb: 4
+    min_vram_gb: 3
+    notes: Tiny thinking model. A cheap, fast model for explorer/reviewer sub-agents (/agents model explorer qwen3-1.7b).
+
+  - id: granite-4.0-micro
+    role: chat
+    tier: small
+    repo: ibm-granite/granite-4.0-micro-GGUF
+    file: granite-4.0-micro-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 2.10
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 5
+    min_vram_gb: 3
+    notes: IBM Granite 4.0 micro. Small enterprise-oriented model trained for tool calling.
+
+  - id: phi-4-mini
+    role: chat
+    tier: small
+    repo: unsloth/Phi-4-mini-instruct-GGUF
+    file: Phi-4-mini-instruct-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 2.49
+    license: mit
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 6
+    min_vram_gb: 4
+    notes: Microsoft Phi-4-mini (MIT). Good reasoning for its size, supports function calling.
+
+  - id: granite-4.0-h-tiny
+    role: chat
+    tier: balanced
+    repo: ibm-granite/granite-4.0-h-tiny-GGUF
+    file: granite-4.0-h-tiny-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 4.23
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 8
+    min_vram_gb: 6
+    notes: IBM Granite 4.0 hybrid (7B). Needs a recent llama.cpp build.
+
+  - id: granite-3.3-8b
+    role: chat
+    tier: balanced
+    repo: ibm-granite/granite-3.3-8b-instruct-GGUF
+    file: granite-3.3-8b-instruct-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 4.94
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 10
+    min_vram_gb: 7
+    notes: IBM Granite 3.3. Dependable tool calling and RAG behaviour.
+
+  - id: mistral-nemo-12b
+    role: chat
+    tier: quality
+    repo: bartowski/Mistral-Nemo-Instruct-2407-GGUF
+    file: Mistral-Nemo-Instruct-2407-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 7.48
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 14
+    min_vram_gb: 10
+    notes: Mistral Nemo 12B. Strong multilingual general model (good Polish).
+
+  - id: gpt-oss-20b
+    role: chat
+    tier: quality
+    repo: unsloth/gpt-oss-20b-GGUF
+    file: gpt-oss-20b-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 11.62
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 20
+    min_vram_gb: 14
+    notes: OpenAI open-weight reasoning model with native tool calling. Wants 16 GB VRAM or 32 GB RAM.
+
+  - id: devstral-small-24b
+    role: chat
+    tier: quality
+    repo: unsloth/Devstral-Small-2507-GGUF
+    file: Devstral-Small-2507-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 14.33
+    license: apache-2.0
+    ctx_max: 131072
+    tools: template
+    vision: false
+    min_ram_gb: 24
+    min_vram_gb: 16
+    notes: Mistral Devstral, built for agentic coding. Heavy; for workstations with 16+ GB VRAM or 32 GB RAM (slow on CPU).
+
+  - id: qwen3-coder-30b
+    role: chat
+    tier: quality
+    repo: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+    file: Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf
+    quant: Q4_K_M
+    size_gb: 18.56
+    license: apache-2.0
+    ctx_max: 262144
+    tools: template
+    vision: false
+    min_ram_gb: 28
+    min_vram_gb: 20
+    notes: Best coding agent in the catalogue (MoE, only 3B active parameters, so usable on CPU with 32 GB RAM).
+
   # ---------------------------------------------------------------- vision
   - id: qwen3-vl-4b
     role: vision

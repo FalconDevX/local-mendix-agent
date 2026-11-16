@@ -22,6 +22,7 @@ MODES: dict[str, str] = {
              "(max 8 concrete steps, one line each). Do not modify anything."),
     "agent": ("MODE /agent: complete the task autonomously, step by step. Follow the plan, call update_plan as steps "
               "start/finish, inspect results of every tool call and adapt when something fails."),
+    "team": "MODE /team: you lead a small team of sub-agents. You split the work, they do it, you report the result.",
     "code": ("MODE /code: implement the requested code change. Read the relevant files first, then make minimal, "
              "correct edits with edit_file/write_file. Keep the existing style. Fix any reported syntax errors."),
     "review": ("MODE /review: review the code or the current git diff. Report concrete problems as "
@@ -34,12 +35,15 @@ PLAN_PROMPT = ("Before acting, write the plan for this task as a numbered list o
                "Output only the list, no introduction.")
 
 
-def build_system(state: AppState, mode: str, retrieved: str) -> str:
+def build_system(state: AppState, mode: str, retrieved: str, with_plan: bool = True) -> str:
     parts = [BASE, MODES.get(mode, MODES["agent"])]
     if mode == "mendix":
         parts.append(state.mendix.guidance())
     if state.root:
-        facts = [f"Open project: {state.root}"]
+        facts = [f"Open project: {state.root}\nPaths of project files are RELATIVE to that folder (e.g. src/app.py), as list_dir and grep print them."]
+        if state.workspace and state.workspace.extra:
+            facts.append("Additional context folders (the same tools work there; only for files in THESE folders use the absolute path):\n"
+                         + "\n".join(f"- {p.as_posix()}" for p in state.workspace.extra))
         if state.mendix_project:
             facts.append(state.mendix_project.summary())
         if g := git.summary(state.root):
@@ -52,7 +56,7 @@ def build_system(state: AppState, mode: str, retrieved: str) -> str:
     others = [n for n, c in state.mcp.connections.items() if c.connected and n != "mendix"]
     if others:
         parts.append("Other connected MCP servers: " + ", ".join(others))
-    if state.plan and mode != "plan":
+    if state.plan and mode != "plan" and with_plan:
         marks = {"pending": " ", "in_progress": ">", "done": "x", "failed": "!", "skipped": "-"}
         parts.append("Current plan:\n" + "\n".join(f"{i}. [{marks.get(s.status, ' ')}] {s.text}" for i, s in enumerate(state.plan, 1)))
     if retrieved:
@@ -75,9 +79,9 @@ async def retrieve(state: AppState, query: str, mode: str, first_turn: bool) -> 
         if prev:
             lines = [f"- {title}" + (f" => {summary[:300]}" if summary else "") for _, title, summary in prev]
             blocks.append("Earlier sessions on this project:\n" + "\n".join(lines))
-    if state.index is not None and mode in ("ask", "code", "review", "agent", "plan") and state.index.counts()["files"]:
+    if mode in ("ask", "code", "review", "agent", "plan", "team") and state.indexed():
         try:
-            hits = await state.index.search(query, state.embedder, limit=3)
+            hits = await state.search(query, limit=3)
         except Exception:  # noqa: BLE001
             hits = []
         if hits:

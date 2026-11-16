@@ -65,19 +65,63 @@ class Workspace:
 
     def __init__(self, root: Path, snapshot_dir: Path) -> None:
         self.root = root.resolve()
+        self.extra: list[Path] = []  # additional authorised folders (/add-dir)
         self.snapshot_dir = snapshot_dir
         self.pending: dict[str, Change] = {}
 
+    # ---- roots ---------------------------------------------------------
+    @property
+    def roots(self) -> list[Path]:
+        return [self.root, *self.extra]
+
+    def add_root(self, path: Path) -> None:
+        path = path.resolve()
+        if path not in self.roots:
+            self.extra.append(path)
+
+    def remove_root(self, path: Path) -> None:
+        path = path.resolve()
+        self.extra.remove(path)
+        for rel in [r for r in self.pending if Path(r).is_absolute() and (path == Path(r) or path in Path(r).parents)]:
+            del self.pending[rel]
+
     # ---- path safety ---------------------------------------------------
     def resolve(self, path: str | Path) -> Path:
+        """Absolute path of `path`, which must lie inside the project or an additional folder.
+
+        Relative paths belong to the project. If nothing exists there, the additional folders are
+        tried too (as `<folder name>/rest` or `rest`), so a model that drops the absolute prefix
+        still reaches the file it just saw in a listing.
+        """
         p = Path(path)
         full = (p if p.is_absolute() else self.root / p).resolve()
-        if full != self.root and self.root not in full.parents:
-            raise EditError(f"path {path!s} is outside the project directory {self.root}")
+        if not p.is_absolute() and self.extra and not full.exists():
+            for root in self.extra:
+                parts = p.parts
+                cands = [root / p] + ([root.joinpath(*parts[1:])] if parts and parts[0].lower() == root.name.lower() else [])
+                hit = next((c.resolve() for c in cands if c.exists()), None)
+                if hit is not None and self.owner(hit) is not None:
+                    return hit
+        if self.owner(full) is None:
+            where = f"the project directory {self.root}" + (f" and the additional folders ({', '.join(map(str, self.extra))})" if self.extra else "")
+            raise EditError(f"path {path!s} is outside {where}")
         return full
 
+    def owner(self, full: Path) -> Path | None:
+        """The authorised root that contains `full` (None = not allowed)."""
+        return next((r for r in self.roots if full == r or r in full.parents), None)
+
     def rel(self, path: str | Path) -> str:
-        return self.resolve(path).relative_to(self.root).as_posix()
+        """Key of a file: project-relative posix path, or the absolute posix path in an additional folder."""
+        full = self.resolve(path)
+        if full == self.root or self.root in full.parents:
+            return full.relative_to(self.root).as_posix()
+        return full.as_posix()
+
+    @staticmethod
+    def _snap_key(rel: str) -> str:
+        """Where a file is kept inside a snapshot (absolute keys must not escape the snapshot folder)."""
+        return "__external__/" + rel.replace(":", "").lstrip("/") if Path(rel).is_absolute() else rel
 
     # ---- overlay reads -------------------------------------------------
     def exists(self, path: str | Path) -> bool:
@@ -180,7 +224,7 @@ class Workspace:
                     "files": [{"rel": c.rel, "kind": c.kind, "old_sha": digest(c.old), "new_sha": digest(c.new)} for c in changes]}
         for ch in changes:
             if ch.old is not None:
-                dst = snap / "files" / ch.rel
+                dst = snap / "files" / self._snap_key(ch.rel)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(self.root / ch.rel, dst)
         (snap / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -207,7 +251,7 @@ class Workspace:
         full = self.root / rel
         if existed:
             full.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(snap / "files" / rel, full)
+            shutil.copy2(snap / "files" / self._snap_key(rel), full)
         elif full.exists():
             full.unlink()
 

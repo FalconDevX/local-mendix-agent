@@ -15,28 +15,35 @@ from lma import doctor
 from lma.config import load_settings, save_settings, set_setting, store_secret
 from lma.core.agent import Agent, TurnResult, report
 from lma.core.context import message_tokens
+from lma.core.roles import ROLES
 from lma.core.state import AppState
+from lma.core.team import _slots as team_slots
+from lma.core.team import run_team
 from lma.editing.editor import EditError
 from lma.llm import runtime
 from lma.llm.downloader import DownloadError
 from lma.llm.hardware import recommend_runtime
 from lma.llm.manager import LLMError
-from lma.llm.registry import fit
+from lma.llm.registry import ModelSpec, fit
 from lma.mcpx.manager import ServerConfig, describe_error, save_mcp_config
 from lma.project.scanner import read_text, scan, stats, tree
 from lma.tools import git
 from lma.tools.image import IMAGE_SUFFIXES, from_clipboard, load_image
 from lma.ui.rendering import Renderer
 
-MODES = ("ask", "plan", "agent", "code", "review", "mendix", "vision")
+MODES = ("ask", "plan", "agent", "code", "review", "mendix", "vision", "team")
 HELP: list[tuple[str, str]] = [
     ("/help", "this list"),
     ("/ask /plan /agent /code /review /mendix /vision", "switch mode, or run once: /ask <question>"),
-    ("/model [chat|vision|embed] [id]", "show or switch the active model"),
+    ("/team [task]", "multi-agent run: lead splits the task, explorers + workers + reviewer do it"),
+    ("/agents [on|off | model <role> <id|default> | parallel <n>]", "sub-agent roles and their models"),
+    ("/model [chat|vision|embed] [id]", "pick the active model (no arguments: choose from a list)"),
     ("/models [delete <id> | add <gguf> <role> [mmproj]]", "catalogue, hardware fit, installed models"),
-    ("/download [<model-id> | runtime [cpu|vulkan|cuda-12.4 | <zip>...]]", "download a model or the llama.cpp runtime"),
+    ("/download [auto | mirror | <model-id> | hf:<owner>/<repo>/<file>.gguf [role] | runtime [cpu|vulkan|cuda-12.4 | <zip>...]]", "download a model or the llama.cpp runtime"),
     ("/project", "active project facts"), ("/open <folder>", "open a project folder"),
-    ("/index [--full]", "index the project (incremental) and refresh its summary"),
+    ("/add-dir <folder>", "add another folder to the context (read, search, staged edits)"),
+    ("/dirs", "folders in the context"), ("/remove-dir <folder|name>", "drop an additional folder"),
+    ("/index [--full]", "index the project and the additional folders (incremental)"),
     ("/search <query>", "hybrid semantic + keyword search"), ("/read <file> [from-to]", "show a file"),
     ("/write <file> [:: text]", "stage a new file content"), ("/edit <file> <instruction>", "let the model edit one file (staged)"),
     ("/diff", "show staged changes"), ("/apply", "write staged changes (snapshot first)"), ("/reject [file]", "discard staged changes"),
@@ -86,17 +93,61 @@ class Commands:
     async def chat(self, text: str, mode: str | None = None) -> TurnResult:
         """Send a message to the agent and handle the aftermath (report, staged edits)."""
         images, self.s.attachments = self.s.attachments, []
-        res = await self.agent.run(text, mode, images)
-        self.ui.finish()
+        team = (mode or self.s.mode) == "team"
+        self.ui.turn_start("Assembling the team" if team else "Thinking")
+        try:
+            res = await (run_team(self.s, self.agent.toolbox, text) if team else self.agent.run(text, mode, images))
+        finally:
+            self.ui.turn_end()
         if res.error:
             self.ui.error(res.error)
         rep = report(res.ledger)
-        if rep:
+        if rep and any(e.risk != "read" or not e.ok for e in res.ledger):
             self.ui.info(rep)
         if res.stopped == "completed":
-            self.ui.emit("activity", ("COMPLETED", f"{res.steps} step(s), {res.seconds:.0f}s, context {self.s.context_tokens}/{self.s.settings.llm.context_size} tokens"))
+            ctx_k = f"{self.s.context_tokens / 1000:.1f}k/{self.s.settings.llm.context_size / 1000:.0f}k"
+            self.ui.emit("activity", ("COMPLETED", f"{res.steps} step(s) · {len(res.ledger)} tool use(s) · {res.seconds:.0f}s · context {ctx_k}"))
         await self.review_pending()
         return res
+
+    async def cmd_team(self, arg: str) -> None:
+        await self._mode("team", arg)
+
+    async def cmd_agents(self, arg: str) -> None:
+        parts = arg.split()
+        cfg = self.s.settings.agent
+        if parts and parts[0] == "model":
+            if len(parts) != 3 or parts[1] not in ROLES:
+                raise ValueError(f"usage: /agents model <{'|'.join(ROLES)}> <model-id | default>")
+            if parts[2] == "default":
+                cfg.role_models.pop(parts[1], None)
+            elif parts[2] not in self.s.llm.registry.installed:
+                raise KeyError(f"{parts[2]!r} is not installed (see /models)")
+            else:
+                cfg.role_models[parts[1]] = parts[2]
+            save_settings(self.s.settings)
+            self.ui.ok(f"{parts[1]} sub-agents use: {cfg.role_models.get(parts[1], 'the chat model')}")
+            return
+        if parts and parts[0] in ("on", "off"):
+            cfg.multi_agent = parts[0] == "on"
+            save_settings(self.s.settings)
+            self.ui.ok(f"delegation by the main agent: {parts[0]}")
+            return
+        if parts and parts[0] == "parallel" and len(parts) == 2 and parts[1].isdigit():
+            cfg.parallel_agents = max(1, int(parts[1]))
+            save_settings(self.s.settings)
+            team_slots.clear()  # the limiter is rebuilt with the new size on the next sub-agent
+            self.ui.ok(f"sub-agents running at the same time: {cfg.parallel_agents}")
+            return
+        if parts:
+            raise ValueError("usage: /agents [on|off | model <role> <model-id|default> | parallel <n>]")
+        chat = self.s.llm.model_id("chat") or "none"
+        rows = [[name, role.mode, cfg.role_models.get(name, f"{chat} (chat model)"), role.summary] for name, role in ROLES.items()]
+        self.ui.table("Sub-agent roles", ["role", "permissions", "model", "what it does"], rows)
+        self.ui.info(f"delegate tool for the main agent: {'on' if cfg.multi_agent else 'off'} (/agents on|off) · parallel: {cfg.parallel_agents} · "
+                     f"steps per sub-agent: {cfg.subagent_max_steps}")
+        self.ui.info("/team <task> runs the fixed pipeline lead -> explorers -> workers -> reviewer; /team alone switches the mode. "
+                     "A different model per role (/agents model explorer <id>) costs memory: models that do not fit together are swapped.")
 
     async def review_pending(self) -> None:
         ws = self.s.workspace
@@ -252,9 +303,11 @@ class Commands:
 
     async def cmd_model(self, arg: str) -> None:
         parts = arg.split()
-        if not parts:
-            self.ui.table("Active models", ["role", "model"], [[r, v] for r, v in self.s.llm.status().items()])
-            return
+        if not parts or (len(parts) == 1 and parts[0] in ("chat", "vision", "embed")):
+            picked = await self._pick_model(parts[0] if parts else "chat", show_active=not parts)
+            if picked is None:
+                return
+            parts = list(picked)
         role, mid = (parts[0], parts[1]) if len(parts) > 1 else (None, parts[0])
         if role is None:
             role = self.s.llm.registry.spec(mid).role
@@ -264,6 +317,33 @@ class Commands:
         self.ui.ok(f"{role} model -> {mid} (loads on next use)")
         if role == "embed" and self.s.index and self.s.index.counts()["embedded"]:
             self.ui.warn("embedding model changed: run /index --full so stored vectors match the new model")
+
+    async def _pick_model(self, role: str, show_active: bool) -> tuple[str, str] | None:
+        """Numbered list of the installed models for `role`; returns (role, id) or None when nothing was chosen."""
+        llm = self.s.llm
+        if show_active:
+            self.ui.table("Active models", ["role", "model"], [[r, v] for r, v in llm.status().items()])
+        specs = llm.registry.by_role(role, installed_only=True)  # type: ignore[arg-type]
+        if role == "vision":
+            specs = [m for m in specs if m.vision]
+        specs.sort(key=lambda m: (m.role != role, m.size_gb))
+        if not specs:
+            self.ui.warn(f"no {role} model installed: /models shows the catalogue, /download <id> installs one")
+            return None
+        active, loaded = llm.model_id(role), llm.loaded()  # type: ignore[arg-type]
+        rows = [[str(i), m.id, f"{m.size_gb:.1f} GB", fit(m, llm.hardware), m.tools,
+                 " ".join(x for x in ("active" if m.id == active else "", "loaded" if m.id in loaded else "") if x), m.notes[:70]]
+                for i, m in enumerate(specs, 1)]
+        self.ui.table(f"Installed {role} models", ["#", "id", "size", "fit", "tools", "state", "notes"], rows)
+        if self.ask is None:
+            self.ui.info(f"switch with: /model {role} <id>")
+            return None
+        ans = (await self.ask(f"{role} model: number or id (Enter = keep {active}): ")).strip()
+        if not ans:
+            return None
+        if ans.isdigit() and 1 <= int(ans) <= len(specs):
+            return role, specs[int(ans) - 1].id
+        return role, ans
 
     async def _with_progress(self, label: str, fn: Callable[[Callable[[int, int], None]], Any]) -> Any:
         with Progress(TextColumn("[accent]{task.description}"), BarColumn(), DownloadColumn(), TransferSpeedColumn(),
@@ -292,16 +372,56 @@ class Commands:
             self.s.llm.shutdown()
             self.ui.ok(f"runtime installed: {exe}")
             return
+        if parts[0] == "auto":  # first install after a clone: runtime + one model per role, picked for this machine
+            if runtime.find_server(self.s.settings) is None:
+                await self.cmd_download("runtime")
+            for role in ("embed", "chat", "vision"):
+                cands = reg.auto_candidates(hw, role)  # type: ignore[arg-type]
+                if not cands:
+                    self.ui.info(f"{role}: already installed" if any(i.spec.role == role for i in reg.installed.values())
+                                 else f"{role}: no model available for this machine")
+                    continue
+                for spec in cands:
+                    if not await self.confirm(f"Download {spec.id} ({spec.size_gb:.2f} GB, licence {spec.license}) from {reg.source_label()}?"):
+                        break
+                    try:
+                        inst = await self._with_progress(spec.id, lambda cb, spec=spec: reg.download(spec.id, cb, spec=spec))
+                    except DownloadError as exc:
+                        self.ui.warn(f"{spec.id}: {exc}")
+                        continue
+                    self.ui.ok(f"{role}: {spec.id} installed at {inst.path}")
+                    break
+            return
+        if parts[0].startswith("hf:"):  # any GGUF from the Hub: /download hf:owner/repo/file.gguf [chat|vision|embed]
+            role = parts[1] if len(parts) > 1 else "chat"
+            if role not in ("chat", "vision", "embed"):
+                raise ValueError("usage: /download hf:<owner>/<repo>/<file>.gguf [chat|vision|embed]")
+            custom = await asyncio.to_thread(reg.hf_spec, parts[0], role)  # type: ignore[arg-type]
+            self.ui.info(f"{custom.repo}/{custom.file}: {custom.size_gb:.2f} GB. Not in the catalogue: licence and tool calling are unverified.")
+            parts, extra = [custom.id], {custom.id: custom}
+        else:
+            extra = {}
+        if parts[0] == "mirror":  # what the GitHub mirror (for networks that block Hugging Face) offers
+            manifest = await asyncio.to_thread(reg.mirror_manifest)
+            rows = [[mid, e["spec"].get("role", "?"), f"{sum(int(f['size']) for f in e['files'])/1e9:.2f} GB",
+                     e["spec"].get("license", "?"), "yes" if mid in reg.installed else ""]
+                    for mid, e in sorted(manifest["models"].items())]
+            self.ui.table(f"GitHub mirror {reg.mirror_base}", ["id", "role", "size", "licence", "installed"], rows)
+            self.ui.info("/download <id> fetches one. Only the mirror: /config llm.model_source github")
+            return
         for mid in parts:
-            spec = reg.catalogue.get(mid)
+            spec = extra.get(mid) or reg.catalogue.get(mid)
+            if spec is None and self.s.settings.llm.model_source != "hf":
+                entry = (await asyncio.to_thread(reg.mirror_manifest))["models"].get(mid)
+                spec = reg.catalogue.get(mid) if entry is None else ModelSpec.model_validate(entry["spec"])
             if spec is None:
-                raise KeyError(f"{mid!r} is not in the catalogue (see /models)")
+                raise KeyError(f"{mid!r} is not in the catalogue (see /models, /download mirror; any Hub file: /download hf:<owner>/<repo>/<file>.gguf)")
             how = fit(spec, hw)
             if how == "too-big":
                 self.ui.warn(f"{mid} needs about {spec.min_ram_gb:g} GB RAM; this machine has {hw.ram_total_gb} GB. It will probably not run.")
-            if not await self.confirm(f"Download {mid} ({spec.size_gb:.2f} GB, licence {spec.license}) from {self.s.settings.llm.hf_endpoint}/{spec.repo}?"):
+            if not await self.confirm(f"Download {mid} ({spec.size_gb:.2f} GB, licence {spec.license}) from {reg.source_label()}?"):
                 continue
-            inst = await self._with_progress(mid, lambda cb, mid=mid: reg.download(mid, cb))
+            inst = await self._with_progress(mid, lambda cb, mid=mid, spec=spec: reg.download(mid, cb, spec=spec))
             self.ui.ok(f"{mid} installed at {inst.path} (SHA-256 {'verified' if inst.verified else 'not available'})")
         if runtime.find_server(self.s.settings) is None:
             self.ui.warn("the llama.cpp runtime is not installed yet: run /download runtime")
@@ -316,12 +436,46 @@ class Commands:
         if self.s.index and self.s.index.counts()["files"] == 0:
             self.ui.info("not indexed yet: run /index for search and project-wide questions")
 
+    async def cmd_add_dir(self, arg: str) -> None:
+        if not arg:
+            raise ValueError("usage: /add-dir <folder>")
+        had_project = self.s.workspace is not None
+        target = Path(arg.strip('"')).expanduser()
+        if not target.is_absolute() and not target.is_dir() and self.s.root and (self.s.root / target).is_dir():
+            target = self.s.root / target  # relative to the project, e.g. /add-dir ../shared
+        path = self.s.add_dir(target)
+        if not had_project:
+            self.ui.ok(f"project: {path} (first folder becomes the project; further /add-dir calls add context folders)")
+            return
+        n = sum(1 for _ in scan(path, self.s.settings.index.ignore_dirs))
+        self.ui.ok(f"added to the context: {path} ({n} files). The agent can read, search and stage edits there.")
+        self.ui.info("files there are addressed by absolute path; run /index to make the folder searchable semantically. /dirs lists folders.")
+
+    async def cmd_dirs(self, arg: str) -> None:
+        if self.s.workspace is None:
+            self.ui.warn("no project open. /open <folder>")
+            return
+        rows = []
+        for root, idx, prefix in self.s.indexes():
+            c = idx.counts()
+            rows.append(["project" if not prefix else "additional", str(root), f"{c['files']} files, {c['chunks']} chunks" if c["files"] else "not indexed"])
+        self.ui.table("Folders in the context", ["kind", "folder", "index"], rows)
+        self.ui.info("/add-dir <folder> adds one, /remove-dir <folder|name> drops one. The list is remembered per project.")
+
+    async def cmd_remove_dir(self, arg: str) -> None:
+        if not arg or self.s.workspace is None:
+            raise ValueError("usage: /remove-dir <folder|name>   (see /dirs)")
+        gone = self.s.remove_dir(arg.strip('"'))
+        self.ui.ok(f"removed from the context: {gone} (nothing was deleted on disk)")
+
     async def cmd_project(self, arg: str) -> None:
         if self.s.root is None:
             self.ui.warn("no project open. /open <folder>")
             return
         files = list(scan(self.s.root, self.s.settings.index.ignore_dirs))
         self.ui.console.print(f"[accent]{self.s.root}[/accent]\n{stats(files)}")
+        for extra in self.s.workspace.extra if self.s.workspace else []:
+            self.ui.console.print(f"additional context folder: {extra}", markup=False)
         if g := git.summary(self.s.root):
             self.ui.console.print(f"git: {g}")
         if self.s.mendix_project:
@@ -352,6 +506,10 @@ class Commands:
         c = self.s.index.counts()
         self.ui.ok(f"indexed in {time.time() - t0:.1f}s: {res['scanned']} files scanned, {res['changed']} changed, {res['removed']} removed, "
                    f"{res['embedded']} chunks embedded. Totals: {c['chunks']} chunks, {c['symbols']} symbols, {c['deps']} imports")
+        for root, idx in self.s.extra_indexes.items():
+            t1 = time.time()
+            extra = await idx.update(embedder, full="--full" in arg, progress=progress)
+            self.ui.ok(f"indexed {root} in {time.time() - t1:.1f}s: {extra['scanned']} files scanned, {extra['changed']} changed, {extra['embedded']} chunks embedded")
         if res["changed"] or not self.s.memory.get_kind("project_summary"):
             await self._summarize_project()
 
@@ -382,13 +540,13 @@ class Commands:
         if not arg:
             raise ValueError("usage: /search <query>")
         self.ui.emit("activity", ("SEARCHING FILES", arg))
-        if self.s.index is None or self.s.index.counts()["files"] == 0:
+        if not self.s.indexed():
             out = await self.agent.toolbox.execute("grep", {"pattern": arg})
-            self.ui.console.print(out.text)
+            self.ui.console.print(out.text, markup=False)
             self.ui.info("(plain text search: project not indexed, run /index)")
             return
-        hits = await self.s.index.search(arg, self.s.embedder, 8)
-        syms = self.s.index.find_symbol(arg, 5) if " " not in arg else []
+        hits = await self.s.search(arg, 8)
+        syms = self.s.find_symbol(arg, 5) if " " not in arg else []
         for name, kind, path, line in syms:
             self.ui.console.print(f"[ok]symbol[/ok] {kind} {name}  {path}:{line}")
         for h in hits:
@@ -454,8 +612,9 @@ class Commands:
             state = "deleted" if f["kind"] == "DELETE" and not full.exists() else "written" if full.exists() else "MISSING"
             self.ui.console.print(f"  [ok]{f['kind']}[/ok] {f['rel']} ({state})")
         self.ui.ok(f"applied change set {manifest['id']} ({len(manifest['files'])} file(s)); /undo rolls it back")
-        if self.s.index and self.s.index.counts()["files"]:
-            await self.s.index.update(self.s.embedder)
+        for _, idx, _ in self.s.indexes():
+            if idx.counts()["files"]:
+                await idx.update(self.s.embedder)
 
     async def cmd_reject(self, arg: str) -> None:
         n = self._ws().reject(arg.strip('"') or None)

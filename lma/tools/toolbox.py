@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lma.core.state import AppState, LedgerEntry
+from lma.core.state import AppState, LedgerEntry, current_agent
+from lma.core.roles import ROLES
 from lma.editing.editor import Change, EditError, validate
 from lma.project.scanner import classify, scan, tree
 from lma.tools import git
@@ -35,6 +36,7 @@ class ToolSpec:
     risk: str  # read | stage | write | exec
     handler: Handler
     activity: str = "EXECUTING TOOL"
+    timeout: float | None = None  # None = agent.tool_timeout_s
 
     def schema(self) -> dict[str, Any]:
         return {"type": "function", "function": {"name": self.name, "description": self.description, "parameters": self.parameters}}
@@ -60,7 +62,9 @@ def summarize_args(args: dict[str, Any], limit: int = 90) -> str:
     for k, v in args.items():
         text = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
         text = text.replace("\n", "\\n")
-        parts.append(f"{k}={text[:40] + '...' if len(text) > 40 else text}")
+        if len(text) > 40:  # of a path the end matters, of anything else the beginning
+            text = "..." + text[-44:] if k in ("path", "source", "destination") else text[:40] + "..."
+        parts.append(f"{k}={text}")
     out = ", ".join(parts)
     return out[:limit] + ("..." if len(out) > limit else "")
 
@@ -72,8 +76,9 @@ class Toolbox:
         self._register_builtin()
 
     # ---- registry ------------------------------------------------------
-    def add(self, name: str, description: str, parameters: dict[str, Any], risk: str, handler: Handler, activity: str = "EXECUTING TOOL") -> None:
-        self.tools[name] = ToolSpec(name, description, parameters, risk, handler, activity)
+    def add(self, name: str, description: str, parameters: dict[str, Any], risk: str, handler: Handler,
+            activity: str = "EXECUTING TOOL", timeout: float | None = None) -> None:
+        self.tools[name] = ToolSpec(name, description, parameters, risk, handler, activity, timeout)
 
     def refresh_mcp(self) -> None:
         """(Re)build MCP tool entries from what the connected servers actually report."""
@@ -93,12 +98,16 @@ class Toolbox:
             schema.setdefault("properties", {})
             self.add(full, (info.description or info.name)[:1000], schema, "read" if info.policy == "read" else "write", handler, label)
 
-    def schemas(self, mode: str) -> list[dict[str, Any]]:
+    def schemas(self, mode: str, sub: bool = False) -> list[dict[str, Any]]:
         read_only = mode in ("ask", "plan", "review", "vision")
         out = []
         for t in self.tools.values():
             if read_only and t.risk != "read":
                 continue
+            if t.name == "delegate" and (sub or read_only or not self.s.settings.agent.multi_agent):
+                continue  # sub-agents never spawn agents themselves
+            if t.name == "update_plan" and sub:
+                continue  # the plan belongs to the lead agent
             if t.name == "run_command" and not self.s.settings.agent.allow_shell:
                 continue
             if self.s.workspace is None and not (t.name.startswith("mcp__") or t.name in ("remember", "recall", "update_plan", "mcp_read_resource")):
@@ -120,13 +129,14 @@ class Toolbox:
         decision = await self.s.permissions.check(name, spec.risk, summarize_args(args, 200))
         if not decision.allowed:
             return self._record(name, args, False, 0, f"NOT EXECUTED - permission denied: {decision.reason}", spec.risk)
-        self.s.emit("activity", (spec.activity, f"{name}({summarize_args(args)})"))
+        self.s.emit("tool_call", (name, summarize_args(args), spec.activity))
         t0 = time.perf_counter()
+        timeout = spec.timeout or self.s.settings.agent.tool_timeout_s
         try:
-            text = await asyncio.wait_for(spec.handler(args), self.s.settings.agent.tool_timeout_s)
+            text = await asyncio.wait_for(spec.handler(args), timeout)
             ok = True
         except asyncio.TimeoutError:
-            ok, text = False, f"tool timed out after {self.s.settings.agent.tool_timeout_s}s"
+            ok, text = False, f"tool timed out after {timeout:.0f}s"
         except (EditError, FileNotFoundError, PermissionError, ValueError, KeyError, OSError) as exc:
             ok, text = False, f"{type(exc).__name__}: {exc}"
         except ToolFailure as exc:
@@ -138,7 +148,8 @@ class Toolbox:
     def _record(self, name: str, args: dict[str, Any], ok: bool, seconds: float, text: str, risk: str) -> Outcome:
         limit = self.s.settings.agent.tool_result_chars
         shown = text if len(text) <= limit else text[:limit] + f"\n... [truncated {len(text) - limit} of {len(text)} chars; narrow the request]"
-        entry = LedgerEntry(name, summarize_args(args), ok, seconds, text[:300], risk)
+        entry = LedgerEntry(name, summarize_args(args), ok, seconds, text[:300], risk, agent=current_agent.get(),
+                            lines=text.count("\n") + 1)
         self.s.ledger.append(entry)
         self.s.emit("tool_result", entry)
         return Outcome(ok, shown if ok else "ERROR: " + shown)
@@ -197,6 +208,12 @@ class Toolbox:
         a("recall", "Search persistent memory (earlier sessions, decisions, project facts).", obj({"query": S}, ["query"]), "read", self.recall)
         a("update_plan", "Update the status of a plan step. status: in_progress, done, failed or skipped.",
           obj({"step": I, "status": {"type": "string", "enum": ["in_progress", "done", "failed", "skipped"]}, "note": S}, ["step", "status"]), "read", self.update_plan, "PLANNING")
+        a("delegate", "Hand a self-contained sub-task to a sub-agent that works with its own fresh context and returns a "
+          "written report. Use it to explore large areas of the project, to implement an independent part, or to get a "
+          "review. Several delegate calls in one message run in parallel. The sub-agent knows nothing about this "
+          "conversation: put every needed detail (goal, files, constraints) into `task`. "
+          "Roles: " + "; ".join(f"{name} = {role.summary}" for name, role in ROLES.items()) + ".",
+          obj({"role": {"type": "string", "enum": list(ROLES)}, "task": S}, ["role", "task"]), "read", self.delegate, "THINKING", timeout=3600)
         a("mcp_read_resource", "Read a resource exposed by a connected MCP server.", obj({"server": S, "uri": S}, ["server", "uri"]), "read", self.mcp_read_resource)
 
     # filesystem ---------------------------------------------------------
@@ -205,11 +222,21 @@ class Toolbox:
         target = ws.resolve(args.get("path") or ".")
         if not target.is_dir():
             raise ToolFailure(f"{args.get('path')} is not a directory")
-        return tree(target, self.s.settings.index.ignore_dirs, max_depth=int(args.get("depth") or 2))
+        depth = int(args.get("depth") or 2)
+        out = tree(target, self.s.settings.index.ignore_dirs, max_depth=depth)
+        if target == ws.root:  # the additional folders are part of the workspace too
+            for extra in ws.extra:
+                out += f"\n\n[additional context folder {extra.as_posix()}]\n" + tree(extra, self.s.settings.index.ignore_dirs, max_depth=depth, max_entries=80)
+        return out
 
     async def read_file(self, args: dict[str, Any]) -> str:
         ws = self._ws()
-        text = ws.read(args["path"])
+        try:
+            text = ws.read(args["path"])
+        except EditError as exc:
+            if "does not exist" not in str(exc) and "outside" not in str(exc):
+                raise
+            raise ToolFailure(f"{exc}{self._did_you_mean(args['path'])}") from exc
         lines = text.splitlines()
         start = max(1, int(args.get("start_line") or 1))
         end = min(len(lines), int(args.get("end_line") or start + 399), start + 399)
@@ -217,6 +244,20 @@ class Toolbox:
         staged = " (showing STAGED, not yet applied content)" if ws.rel(args["path"]) in ws.pending else ""
         more = f"\n... file has {len(lines)} lines; call again with start_line={end + 1}" if end < len(lines) else ""
         return f"{ws.rel(args['path'])} lines {start}-{end} of {len(lines)}{staged}\n{body}{more}"
+
+    def _did_you_mean(self, path: str) -> str:
+        """Files with the same name elsewhere in the context: small models often get a folder wrong."""
+        name = Path(str(path).replace("\\", "/")).name.lower()
+        if not name:
+            return ""
+        ws, found = self._ws(), []
+        for root in ws.roots:
+            for f in scan(root, self.s.settings.index.ignore_dirs):
+                if f.path.name.lower() == name:
+                    found.append(ws.rel(f.path))
+                    if len(found) >= 5:
+                        break
+        return f". Did you mean: {', '.join(found)}" if found else ". No file with that name exists in the project; use list_dir or grep."
 
     async def file_info(self, args: dict[str, Any]) -> str:
         ws = self._ws()
@@ -238,28 +279,31 @@ class Toolbox:
             raise ToolFailure(f"invalid regex: {exc}") from exc
         glob, limit = args.get("glob"), int(args.get("max_results") or 40)
         hits: list[str] = []
-        for f in scan(ws.root, self.s.settings.index.ignore_dirs):
-            if not f.is_text or f.size > self.s.settings.index.max_file_bytes:
-                continue
-            if glob and not (fnmatch.fnmatch(f.rel, glob) or fnmatch.fnmatch(Path(f.rel).name, glob)):
-                continue
-            try:
-                content = ws.read(f.rel)
-            except EditError:
-                continue
-            for n, line in enumerate(content.splitlines(), 1):
-                if rx.search(line):
-                    hits.append(f"{f.rel}:{n}: {line.strip()[:200]}")
-                    if len(hits) >= limit:
-                        return "\n".join(hits) + f"\n... stopped at {limit} matches"
+        for root in ws.roots:
+            for f in scan(root, self.s.settings.index.ignore_dirs):
+                if not f.is_text or f.size > self.s.settings.index.max_file_bytes:
+                    continue
+                if glob and not (fnmatch.fnmatch(f.rel, glob) or fnmatch.fnmatch(Path(f.rel).name, glob)):
+                    continue
+                shown = ws.rel(f.path)  # project-relative, or absolute inside an additional folder
+                try:
+                    content = ws.read(f.path)
+                except EditError:
+                    continue
+                for n, line in enumerate(content.splitlines(), 1):
+                    if rx.search(line):
+                        hits.append(f"{shown}:{n}: {line.strip()[:200]}")
+                        if len(hits) >= limit:
+                            return "\n".join(hits) + f"\n... stopped at {limit} matches"
         return "\n".join(hits) if hits else "no matches"
 
     async def search_code(self, args: dict[str, Any]) -> str:
-        idx = self._index()
-        hits = await idx.search(args["query"], self.s.embedder, int(args.get("limit") or 6))
+        self._index()
+        hits = await self.s.search(args["query"], int(args.get("limit") or 6))
         if not hits:
             return "no results (try grep with a regex, or other keywords)"
-        mode = "hybrid (keyword + embeddings)" if idx.counts()["embedded"] and self.s.embedder else "keyword only (no embedding model installed)"
+        embedded = any(idx.counts()["embedded"] for _, idx, _ in self.s.indexes())
+        mode = "hybrid (keyword + embeddings)" if embedded and self.s.embedder else "keyword only (no embedding model installed)"
         parts = [f"search mode: {mode}"]
         for h in hits:
             snippet = "\n".join(h.text.splitlines()[:25])
@@ -269,12 +313,13 @@ class Toolbox:
     def _index(self):  # noqa: ANN202
         self._ws()
         idx = self.s.index
-        if idx is None or idx.counts()["files"] == 0:
+        if idx is None or not self.s.indexed():
             raise ToolFailure("the project is not indexed yet; ask the user to run /index (grep and read_file still work)")
         return idx
 
     async def find_symbol(self, args: dict[str, Any]) -> str:
-        rows = self._index().find_symbol(args["name"])
+        self._index()
+        rows = self.s.find_symbol(args["name"])
         return "\n".join(f"{kind} {name} - {path}:{line}" for name, kind, path, line in rows) or "symbol not found in the index"
 
     async def file_dependencies(self, args: dict[str, Any]) -> str:
@@ -288,6 +333,8 @@ class Toolbox:
     async def project_overview(self, args: dict[str, Any]) -> str:
         ws = self._ws()
         parts = [f"Project root: {ws.root}"]
+        if ws.extra:
+            parts.append("Additional context folders: " + ", ".join(p.as_posix() for p in ws.extra))
         if self.s.index and self.s.index.counts()["files"]:
             parts.append(self.s.index.overview())
         else:
@@ -405,6 +452,17 @@ class Toolbox:
         self.s.plan[i].status, self.s.plan[i].note = args["status"], args.get("note") or ""
         self.s.emit("plan", self.s.plan)
         return f"step {i + 1} marked {args['status']}"
+
+    async def delegate(self, args: dict[str, Any]) -> str:
+        from lma.core.team import run_subagent  # late import: team builds on the agent, which builds on this module
+
+        if args["role"] not in ROLES:
+            raise ToolFailure(f"unknown role {args['role']!r}; roles: {', '.join(ROLES)}")
+        res = await run_subagent(self.s, self, args["role"], args["task"])
+        if res.stopped == "error":
+            raise ToolFailure(f"sub-agent failed: {res.error}")
+        note = "" if res.stopped == "completed" else f"\n[sub-agent stopped early: {res.stopped}]"
+        return (res.text or "(the sub-agent returned no text)") + note
 
     async def mcp_read_resource(self, args: dict[str, Any]) -> str:
         return await self.s.mcp.get(args["server"]).read_resource(args["uri"])

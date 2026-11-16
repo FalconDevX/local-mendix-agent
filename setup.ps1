@@ -5,6 +5,12 @@ PATH is not modified. Everything lives in this folder (.venv, data\).
   .\setup.ps1                          create .venv and install dependencies from PyPI
   .\setup.ps1 -Wheelhouse .\wheelhouse offline install from a folder of wheels
   .\setup.ps1 -IndexUrl https://nexus.company/pypi/simple   use a corporate PyPI mirror
+  .\setup.ps1 -NoModels                only the Python environment, download nothing else
+
+Unless -NoModels is given, setup then downloads the llama.cpp runtime and one chat, vision and
+embedding model picked for this machine (about 6-9 GB, into data\). Models come from Hugging Face
+or, where that is blocked, from the GitHub release 'models' of this repository. Roles that already
+have a model are skipped, so running setup again downloads nothing twice.
 
 If PowerShell blocks scripts, run:  powershell -ExecutionPolicy Bypass -File .\setup.ps1
 (that flag applies to this one process only and changes no policy).
@@ -13,7 +19,8 @@ Proxy: set HTTPS_PROXY before running if your network requires it.
 param(
     [string]$Wheelhouse = "",
     [string]$IndexUrl = "",
-    [string]$Python = ""
+    [string]$Python = "",
+    [switch]$NoModels
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -82,8 +89,17 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
+if (-not $NoModels) {
+    Write-Host ""
+    Write-Host "Downloading the llama.cpp runtime and models for this machine (skip with -NoModels) ..."
+    & $venvPy main.py --yes --no-mcp -c "/download auto"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Model download did not finish. Run it again later:  .\run.bat --yes --no-mcp -c `"/download auto`"" -ForegroundColor Yellow
+    }
+}
+
 Write-Host ""
 Write-Host "Setup complete." -ForegroundColor Green
 Write-Host "Start:        .\run.bat            (or .venv\Scripts\python.exe main.py)"
 Write-Host "Diagnostics:  .\run.bat -c /doctor"
-Write-Host "First steps inside the app:  /models   /download runtime   /download <model-id>   /mendix connect"
+Write-Host "First steps inside the app:  /models   /download <model-id>   /mendix connect"

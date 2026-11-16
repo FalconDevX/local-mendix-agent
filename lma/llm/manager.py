@@ -118,6 +118,7 @@ class LlamaServer:
         self.port = free_port()
         self.log_file = log_dir / f"llama-{role}.log"
         self.proc: subprocess.Popen[bytes] | None = None
+        self.last_used = 0.0
 
     @property
     def base(self) -> str:
@@ -239,47 +240,70 @@ class LLMManager:
             out[role] = f"{mid or 'none'}{' (loaded)' if srv and srv.alive else ''}"
         return out
 
+    def chat_models(self) -> list[str]:
+        """Installed models that can hold a conversation (chat models first)."""
+        specs = sorted(self.registry.by_role("chat", installed_only=True), key=lambda m: (m.role != "chat", m.size_gb))
+        return [m.id for m in specs]
+
     # ---- server lifecycle ---------------------------------------------
-    async def ensure(self, role: Role) -> LlamaServer:
+    async def ensure(self, role: Role, model: str | None = None) -> LlamaServer:
+        """Running server for `role`. `model` overrides the configured model for this one call
+        (sub-agents may use their own model); such servers live in a slot named `role:model`."""
         async with self._lock:
-            mid = self.model_id(role)
+            default = self.model_id(role)
+            if model and model not in self.registry.installed:
+                raise LLMError(f"model {model!r} is not installed; run /download {model} (or /agents model <role> default)")
+            mid = model or default
             if mid is None:
                 raise LLMError(f"no {role} model installed. Run /models to see recommendations and /download <id>.")
-            srv = self.servers.get(role)
+            slot = role if mid == default else f"{role}:{mid}"
+            srv = self.servers.get(slot)
             if srv and srv.alive and srv.inst.spec.id == mid:
+                srv.last_used = time.monotonic()
                 return srv
             if srv:
-                srv.stop()
-            # one model can serve both chat and vision
-            for other_role, other in self.servers.items():
-                if other.alive and other.inst.spec.id == mid and other_role != "embed" and role != "embed":
-                    self.servers[role] = other
+                self.servers.pop(slot, None)
+                if srv not in self.servers.values():
+                    srv.stop()
+            # one loaded model can serve several slots (chat + vision, or a sub-agent using the chat model)
+            for other_slot, other in self.servers.items():
+                if other.alive and other.inst.spec.id == mid and other.role != "embed" and role != "embed":
+                    self.servers[slot] = other
+                    other.last_used = time.monotonic()
                     return other
             exe = find_server(self.settings)
             if exe is None:
                 raise LLMError("llama.cpp runtime is not installed. Run /download runtime." + MANUAL_HINT)
             inst = self.registry.installed[mid]
             if role in ("chat", "vision"):
-                self._make_room(role, inst)
+                self._make_room(inst)
             srv = LlamaServer(exe, inst, role, self.settings.llm.context_size, self.settings.llm.gpu_layers,
                               self.settings.data_path / "logs", self.settings.llm.startup_timeout_s)
+            srv.log_file = srv.log_file.with_name(f"llama-{slot.replace(':', '-')}.log")
             await srv.start()
-            self.servers[role] = srv
+            srv.last_used = time.monotonic()
+            self.servers[slot] = srv
             return srv
 
-    def _make_room(self, role: str, inst: Installed) -> None:
-        """Chat and vision models rarely fit in VRAM together: unload the other one first."""
-        other_role = "vision" if role == "chat" else "chat"
-        other = self.servers.get(other_role)
-        if not (other and other.alive):
-            return
+    def _make_room(self, inst: Installed) -> None:
+        """Several chat/vision models rarely fit in memory together: unload the least recently used first."""
         budget = self.hardware.vram_total_gb or self.hardware.ram_total_gb / 2
-        if other.inst.spec.size_gb + inst.spec.size_gb + 2 > budget:
-            other.stop()
-            self.servers.pop(other_role, None)
+        loaded = {id(s): s for s in self.servers.values() if s.alive and s.role != "embed"}
+        for victim in sorted(loaded.values(), key=lambda s: s.last_used):
+            if sum(s.inst.spec.size_gb for s in loaded.values()) + inst.spec.size_gb + 2 <= budget:
+                return
+            victim.stop()
+            del loaded[id(victim)]
+            for slot in [k for k, v in self.servers.items() if v is victim]:
+                del self.servers[slot]
+
+    def loaded(self) -> list[str]:
+        """Ids of the models that are in memory right now."""
+        return sorted({s.inst.spec.id for s in self.servers.values() if s.alive})
 
     def stop(self, role: str | None = None) -> None:
-        for r in ([role] if role else list(self.servers)):
+        slots = [s for s in self.servers if s == role or s.startswith(f"{role}:")] if role else list(self.servers)
+        for r in slots:
             srv = self.servers.pop(r, None)
             if srv and srv not in self.servers.values():
                 srv.stop()
@@ -292,15 +316,17 @@ class LLMManager:
     # ---- inference -----------------------------------------------------
     async def chat_stream(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, role: Role = "chat",
-        max_tokens: int | None = None, temperature: float | None = None,
+        max_tokens: int | None = None, temperature: float | None = None, model: str | None = None,
     ) -> AsyncIterator[tuple[str, Any]]:
         """Yield ("text", str) / ("reasoning", str) deltas and finally ("done", ChatResult)."""
-        srv = await self.ensure(role)
+        srv = await self.ensure(role, model)
         body: dict[str, Any] = {
             "messages": messages, "stream": True, "stream_options": {"include_usage": True},
             "temperature": self.settings.llm.temperature if temperature is None else temperature,
             "max_tokens": max_tokens or self.settings.llm.max_output_tokens,
         }
+        if self.settings.llm.repeat_penalty != 1.0:
+            body["repeat_penalty"] = self.settings.llm.repeat_penalty
         if tools:
             body["tools"] = tools
         result = ChatResult()
