@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -79,6 +81,13 @@ def install_from_zips(settings: Settings, zips: list[Path], label: str) -> Path:
     target = settings.runtime_path / label
     target.mkdir(parents=True, exist_ok=True)
     for z in zips:
+        if z.name.endswith((".tar.gz", ".tgz")):  # Linux builds; the "data" filter rejects paths outside target
+            try:
+                with tarfile.open(z) as tf:
+                    tf.extractall(target, filter="data")
+            except tarfile.FilterError as exc:
+                raise DownloadError(f"unsafe path in archive {z.name}: {exc}") from exc
+            continue
         with zipfile.ZipFile(z) as zf:
             for member in zf.infolist():
                 dest = (target / member.filename).resolve()
@@ -94,12 +103,20 @@ def install_from_zips(settings: Settings, zips: list[Path], label: str) -> Path:
 
 
 def install(settings: Settings, variant: str, progress: Progress | None = None) -> Path:
-    """Download and unpack an official llama.cpp Windows build (verified with the release digest)."""
+    """Download and unpack an official llama.cpp Windows or Linux build (verified with the release digest)."""
     if variant not in VARIANTS:
         raise DownloadError(f"unknown runtime variant {variant!r}; choose from {', '.join(VARIANTS)}")
-    if sys.platform != "win32":
-        raise DownloadError("automatic runtime install is implemented for Windows; set LMA_LLAMA_SERVER on other systems")
-    suffix = f"-bin-win-{variant}-x64.zip"
+    if sys.platform == "win32":
+        suffix = f"-bin-win-{variant}-x64.zip"
+    elif sys.platform.startswith("linux"):
+        arch = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}.get(platform.machine().lower())
+        if arch is None:
+            raise DownloadError(f"no official llama.cpp Linux build for {platform.machine()}; set LMA_LLAMA_SERVER")
+        if variant.startswith("cuda"):  # Linux CUDA builds track other CUDA versions; Vulkan drives NVIDIA GPUs too
+            variant = "vulkan"
+        suffix = f"-bin-ubuntu-{arch}.tar.gz" if variant == "cpu" else f"-bin-ubuntu-{variant}-{arch}.tar.gz"
+    else:
+        raise DownloadError("automatic runtime install is implemented for Windows and Linux; set LMA_LLAMA_SERVER on other systems")
     rel = _release(settings, settings.llm.runtime_tag, suffix)
     tag = rel["tag_name"]
     assets = [a for a in [_asset_named(rel, f"llama-{tag}{suffix}")] if a]

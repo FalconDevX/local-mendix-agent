@@ -358,7 +358,7 @@ class Commands:
             await self.cmd_models("")
             return
         if parts[0] == "runtime":
-            zips = [Path(p.strip('"')) for p in parts[1:] if p.lower().endswith(".zip")]
+            zips = [Path(p.strip('"')) for p in parts[1:] if p.lower().endswith((".zip", ".tar.gz", ".tgz"))]
             if zips:
                 exe = runtime.install_from_zips(self.s.settings, zips, "manual-" + zips[0].stem)
                 self.ui.ok(f"runtime installed from local archive: {exe}")
