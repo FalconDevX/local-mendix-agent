@@ -2,7 +2,8 @@
 # data_dir: C:\Users\me\lma-data     # models, index, memory, snapshots, logs
 # project: C:\Projects\MyMendixApp
 mode: agent                          # ask | plan | agent | code | review | mendix | vision
-use_system_trust_store: true
+use_system_trust_store: true          # trust corporate root CAs (TLS inspection) - never disable certificate checks
+# proxy: http://127.0.0.1:3128       # e.g. a local Px/CNTLM; used when HTTPS_PROXY is not set (default: Windows PAC/WPAD)
 llm:
   context_size: 16384                # tokens; lower it (8192) on machines with little RAM/VRAM
   gpu_layers: -1                     # -1 = let llama.cpp fit layers into VRAM automatically, 0 = CPU only

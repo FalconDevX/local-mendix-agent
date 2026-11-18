@@ -87,7 +87,7 @@ the files through an approved channel:
   `/config llm.models_repo owner/repo`.
 - models: copy a `.gguf` file anywhere and `/models add C:\models\model.gguf chat`
   (vision: `/models add model.gguf vision mmproj.gguf`).
-- proxy: set `HTTPS_PROXY`; corporate root CAs are taken from the Windows trust store.
+- proxy: set `HTTPS_PROXY`, or `proxy:` in `config/settings.yaml` (e.g. `http://127.0.0.1:3128` for a local Px); corporate root CAs are taken from the Windows trust store.
 - Hugging Face mirror: `/config llm.hf_endpoint https://hf-mirror.company`.
 
 If `llama-server.exe` is blocked by application control (AppLocker/WDAC), the error says so; that

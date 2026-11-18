@@ -75,6 +75,7 @@ class Settings(BaseModel):
     extra_dirs: dict[str, list[str]] = Field(default_factory=dict)  # project folder -> additional context folders
     mode: str = "agent"
     use_system_trust_store: bool = True
+    proxy: str | None = None  # e.g. "http://127.0.0.1:3128" for a local Px/CNTLM; HTTPS_PROXY in the environment wins
     llm: LLMSettings = Field(default_factory=LLMSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     index: ProjectSettings = Field(default_factory=ProjectSettings)
@@ -219,7 +220,8 @@ def prepare_network_env(settings: Settings) -> None:
                 cur.append(host)
         os.environ[var] = ",".join(cur)
     if not any(os.environ.get(v) for v in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")):
-        proxy = system_proxy()  # the proxy the company configured in Windows (PAC/WPAD), nothing else
+        # settings.yaml `proxy:` (e.g. a local Px), else the proxy Windows itself uses (PAC/WPAD)
+        proxy = (settings.proxy or "").strip().rstrip("/") or system_proxy()
         if proxy:
             os.environ["HTTPS_PROXY"] = os.environ["HTTP_PROXY"] = proxy
     if settings.use_system_trust_store:
