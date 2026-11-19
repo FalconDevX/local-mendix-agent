@@ -33,6 +33,7 @@ class ModelSpec(BaseModel):
     min_vram_gb: float = 0
     query_prefix: str = ""
     doc_prefix: str = ""
+    sampling: dict[str, float] = {}  # recommended temperature/top_p/top_k/min_p/repeat_penalty from the model card
     notes: str = ""
 
 
@@ -72,6 +73,9 @@ class ModelRegistry:
             for mid, item in raw.items():
                 inst = Installed.model_validate(item)
                 if Path(inst.path).exists():  # drop entries whose file vanished
+                    known = self.catalogue.get(inst.spec.id)
+                    if known is not None and known.file.lower() == inst.spec.file.lower() and not inst.spec.sampling:
+                        inst.spec.sampling = dict(known.sampling)  # registered before the catalogue had it
                     self.installed[mid] = inst
 
     def _save(self) -> None:

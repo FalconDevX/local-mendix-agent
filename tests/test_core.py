@@ -240,3 +240,25 @@ def test_mcp_read_resource_without_servers_gives_guidance():
     assert tb._resource_listing() == ""
     with pytest.raises(ToolFailure, match="mendix connect"):
         asyncio.run(tb.mcp_read_resource({"server": "Mendix", "uri": "/"}))
+
+
+def test_sampling_precedence_and_loop_guard():
+    from lma.config import LLMSettings
+    from lma.llm.manager import LoopGuard, sampling_params
+    from lma.llm.registry import ModelSpec
+
+    spec = ModelSpec(id="qwen3-coder-30b", role="chat", file="x.gguf", sampling={"temperature": 0.7, "top_k": 20, "repeat_penalty": 1.05})
+    llm = LLMSettings()
+    assert sampling_params(llm, spec) == {"temperature": 0.7, "top_k": 20, "repeat_penalty": 1.05}
+    llm = LLMSettings(sampling={"qwen3-coder-30b": {"temperature": 0.3}}, top_p=0.9)
+    assert sampling_params(llm, spec) == {"temperature": 0.3, "top_p": 0.9, "top_k": 20, "repeat_penalty": 1.05}
+    assert sampling_params(LLMSettings(), ModelSpec(id="other", role="chat", file="y.gguf")) == {"temperature": 0.2}
+
+    g, text = LoopGuard(), ""
+    looped = False
+    for i in range(1, 40):
+        text += "- AgendaItem" + "StatusHistoryItem" * i + "\n"
+        looped = looped or g.looping(text)
+    assert looped
+    g, normal = LoopGuard(), "".join(f"- Entity{i}: attribute_{i} (string)\n" for i in range(300))
+    assert not any(g.looping(normal[:n]) for n in range(200, len(normal), 50))

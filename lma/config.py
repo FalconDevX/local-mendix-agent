@@ -26,6 +26,13 @@ class LLMSettings(BaseModel):
     temperature: float = 0.2
     max_output_tokens: int = 2048
     repeat_penalty: float = 1.0  # >1.0 (e.g. 1.1) discourages small models from looping; 1.0 = off
+    top_p: float | None = None  # None = llama.cpp default
+    top_k: int | None = None
+    min_p: float | None = None
+    # per-model overrides, e.g. {"qwen3-coder-30b": {"temperature": 0.7, "repeat_penalty": 1.05}}.
+    # Order: this > the model's `sampling` in config/models.yaml > the global values above.
+    sampling: dict[str, dict[str, float]] = Field(default_factory=dict)
+    loop_guard: bool = True  # stop a reply that keeps repeating the same text
     hf_endpoint: str = "https://huggingface.co"
     # where /download gets models: auto = Hugging Face, falling back to the GitHub mirror when the Hub
     # is unreachable; hf = Hub only; github = GitHub mirror only (networks that block Hugging Face)
@@ -131,11 +138,14 @@ def set_setting(s: Settings, dotted: str, raw: str) -> Settings:
     data = s.model_dump()
     node = data
     parts = dotted.split(".")
-    for p in parts[:-1]:
+    free = dotted.startswith("llm.sampling.")  # free-form: model ids and sampling keys may be new
+    for i, p in enumerate(parts[:-1]):
+        if free and i >= 2 and node.get(p) is None:
+            node[p] = {}
         if not isinstance(node.get(p), dict):
             raise KeyError(dotted)
         node = node[p]
-    if parts[-1] not in node:
+    if parts[-1] not in node and not (free and len(parts) == 4):
         raise KeyError(dotted)
     node[parts[-1]] = yaml.safe_load(raw)
     new = Settings.model_validate(data)
