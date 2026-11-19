@@ -225,3 +225,18 @@ def test_register_local_uses_catalogue_spec(tmp_path: Path):
     assert (a.spec.id, a.spec.ctx_max, a.spec.tools) == ("qwen3-4b", 32768, "template")
     b = reg.register_local(other, "chat")
     assert b.spec.ctx_max == 32768 and b.spec.tools == "unknown"
+
+
+def test_mcp_read_resource_without_servers_gives_guidance():
+    """With Maia off the tool is hidden and a guessed call explains what to do instead of a KeyError."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from lma.mcpx.manager import McpConfig, McpManager
+    from lma.tools.toolbox import ToolFailure, Toolbox
+
+    tb = Toolbox.__new__(Toolbox)
+    tb.s = SimpleNamespace(mcp=McpManager(McpConfig()))
+    assert tb._resource_listing() == ""
+    with pytest.raises(ToolFailure, match="mendix connect"):
+        asyncio.run(tb.mcp_read_resource({"server": "Mendix", "uri": "/"}))
