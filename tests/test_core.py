@@ -209,3 +209,19 @@ def test_text_tool_call_extraction():
                  '{"name": "grep", "description": "Regex search", "parameters": {"type": "object", "properties": {}}}',
                  'The config is {"name": "x", "port": 1}.'):
         assert extract_text_tool_calls(text, known) == (text, [])
+
+
+def test_register_local_uses_catalogue_spec(tmp_path: Path):
+    """A catalogue GGUF copied in by hand keeps its real context length (not the 8k fallback)."""
+    from lma.config import Settings
+    from lma.llm.registry import ModelRegistry
+
+    reg = ModelRegistry(Settings(data_dir=str(tmp_path)))
+    known = tmp_path / "Qwen3-4B-Q4_K_M.gguf"
+    other = tmp_path / "my-own-model.gguf"
+    for p in (known, other):
+        p.write_bytes(b"GGUF" + b"0" * 64)
+    a = reg.register_local(known, "chat")
+    assert (a.spec.id, a.spec.ctx_max, a.spec.tools) == ("qwen3-4b", 32768, "template")
+    b = reg.register_local(other, "chat")
+    assert b.spec.ctx_max == 32768 and b.spec.tools == "unknown"

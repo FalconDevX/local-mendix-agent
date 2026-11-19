@@ -250,9 +250,17 @@ class ModelRegistry:
             raise FileNotFoundError(f"{path} is not an existing .gguf file")
         if mmproj is not None and not mmproj.exists():
             raise FileNotFoundError(f"{mmproj} does not exist")
-        mid = model_id or path.stem.lower()
-        spec = ModelSpec(id=mid, role=role, file=path.name, size_gb=round(path.stat().st_size / 1e9, 2),
-                         vision=mmproj is not None, license="unknown (user supplied)", notes="registered from local file")
+        known = next((m for m in self.catalogue.values() if m.file.lower() == path.name.lower() and m.role == role), None)
+        if known is not None:
+            # a catalogue file copied in by hand: keep its real context length, tool support and licence
+            spec = known.model_copy(update={"id": model_id or known.id, "vision": known.vision or mmproj is not None,
+                                            "notes": "registered from local file (catalogue match)"})
+        else:
+            spec = ModelSpec(id=model_id or path.stem.lower(), role=role, file=path.name,
+                             size_gb=round(path.stat().st_size / 1e9, 2), ctx_max=32768,
+                             tools="unknown" if role == "chat" else "none", vision=mmproj is not None,
+                             license="unknown (user supplied)", notes="registered from local file")
+        mid = spec.id
         inst = Installed(spec=spec, path=str(path), mmproj_path=str(mmproj) if mmproj else None,
                          sha256=sha256_of(path), verified=False, installed_at=time.time())
         self.installed[mid] = inst
