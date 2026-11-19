@@ -9,6 +9,16 @@ llm:
   gpu_layers: -1                     # -1 = let llama.cpp fit layers into VRAM automatically, 0 = CPU only
   temperature: 0.2
   max_output_tokens: 2048
+  # Sampling: models in config/models.yaml carry their model-card recommendation (`sampling:`),
+  # which wins over temperature/top_p/top_k/min_p/repeat_penalty here. Override one model:
+  #   /config llm.sampling.qwen3-coder-30b.temperature 0.5
+  # sampling:
+  #   qwen3-coder-30b: {temperature: 0.7, top_p: 0.8, top_k: 20, repeat_penalty: 1.05}
+  repeat_penalty: 1.0                # >1.0 (e.g. 1.05) discourages looping
+  # top_p: 0.8
+  # top_k: 20
+  # min_p: 0.0
+  loop_guard: true                   # stop a reply that keeps repeating the same text
   hf_endpoint: https://huggingface.co    # or a corporate Hugging Face mirror
   model_source: auto                 # auto = Hugging Face, then the GitHub mirror | hf | github (Hugging Face blocked)
   models_repo: FalconDevX/local-mendix-agent   # GitHub repo whose release 'models_tag' holds the mirror

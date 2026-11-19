@@ -39,6 +39,11 @@ def build_system(state: AppState, mode: str, retrieved: str, with_plan: bool = T
     parts = [BASE, MODES.get(mode, MODES["agent"])]
     if mode == "mendix":
         parts.append(state.mendix.guidance())
+    elif state.mendix.connected:
+        # outside /mendix mode the model otherwise trusts stale "not connected" turns in the history
+        parts.append("Maia (Mendix Studio Pro MCP server) IS connected right now; its tools are the mcp__mendix__* tools. "
+                     "Earlier messages saying it was unavailable are outdated. For Mendix model work call those tools "
+                     "(the user can switch to /mendix for the full Mendix workflow).")
     if state.root:
         facts = [f"Open project: {state.root}\nPaths of project files are RELATIVE to that folder (e.g. src/app.py), as list_dir and grep print them."]
         if state.workspace and state.workspace.extra:

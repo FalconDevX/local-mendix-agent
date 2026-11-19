@@ -110,6 +110,14 @@ class Toolbox:
                 continue  # the plan belongs to the lead agent
             if t.name == "run_command" and not self.s.settings.agent.allow_shell:
                 continue
+            if t.name == "mcp_read_resource":
+                listing = self._resource_listing()
+                if not listing:
+                    continue  # no connected server exposes resources: do not invite guessed server names
+                sch = t.schema()
+                sch["function"]["description"] = f"{t.description} Available (server: uri): {listing}"
+                out.append(sch)
+                continue
             if self.s.workspace is None and not (t.name.startswith("mcp__") or t.name in ("remember", "recall", "update_plan", "mcp_read_resource")):
                 continue
             if mode == "mendix" and t.name in ("run_command", "git_commit"):
@@ -464,8 +472,22 @@ class Toolbox:
         note = "" if res.stopped == "completed" else f"\n[sub-agent stopped early: {res.stopped}]"
         return (res.text or "(the sub-agent returned no text)") + note
 
+    def _resource_listing(self) -> str:
+        conns = [c for c in self.s.mcp.connections.values() if c.connected and c.resources]
+        return "; ".join(f"{c.name}: {', '.join(str(r.uri) for r in c.resources[:20])}" for c in conns)
+
     async def mcp_read_resource(self, args: dict[str, Any]) -> str:
-        return await self.s.mcp.get(args["server"]).read_resource(args["uri"])
+        wanted = str(args["server"]).strip().lower()
+        connected = {n.lower(): c for n, c in self.s.mcp.connections.items() if c.connected}
+        if wanted in ("maia", "studio pro", "studiopro", "mendix-studio-pro"):
+            wanted = "mendix"
+        conn = connected.get(wanted)
+        if conn is None:
+            if not connected:
+                raise ToolFailure("no MCP server is connected (Maia is off). Tell the user to start Studio Pro 11.10+ "
+                                  "with the MCP server enabled and run /mendix connect; do not retry this tool.")
+            raise ToolFailure(f"unknown MCP server {args['server']!r}. Available (server: uri): {self._resource_listing() or 'none'}")
+        return await conn.read_resource(args["uri"])
 
 
 class ToolFailure(RuntimeError):

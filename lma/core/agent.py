@@ -165,9 +165,29 @@ class Agent:
         text = ctx.build_system(self.s, mode, retrieved, with_plan=not self.is_sub)
         return text + ("\n\n" + self.instructions if self.instructions else "")
 
+    async def _maybe_reconnect_maia(self) -> None:
+        """Studio Pro is often started (or restarted) after the agent: retry Maia quietly, at most every 30 s."""
+        mx = getattr(self.s, "mendix", None)
+        if self.is_sub or mx is None or mx.connected or not mx.cfg.enabled:
+            return
+        now = time.monotonic()
+        if now - getattr(mx, "_last_auto_try", -1e9) < 30:
+            return
+        mx._last_auto_try = now
+        from lma.mcpx.mendix import find_studio_pro
+        if not find_studio_pro():
+            return
+        try:
+            d = await asyncio.wait_for(mx.connect(), 20)
+        except Exception:  # noqa: BLE001 - best effort, /mendix status explains failures
+            return
+        if d.connected:
+            self.s.emit("phase", f"Maia MCP connected at {d.url} ({len(mx.tools())} tools)")
+
     # ---- one turn ------------------------------------------------------
     async def _turn(self, text: str, mode: str, images: list[LoadedImage]) -> TurnResult:
         s, history = self.s, self.history
+        await self._maybe_reconnect_maia()
         self.toolbox.refresh_mcp()
         s.emit("activity", ("THINKING", "retrieving project context and memory"))
         retrieved = await ctx.retrieve(s, text, mode, first_turn=self._turns == 0 and not self.is_sub)

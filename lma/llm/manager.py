@@ -50,6 +50,43 @@ class ChatResult:
     tokens_per_s: float = 0.0
 
 
+SAMPLING_KEYS = ("temperature", "top_p", "top_k", "min_p", "repeat_penalty", "presence_penalty")
+
+
+def sampling_params(llm: Any, spec: Any) -> dict[str, Any]:
+    """Global settings, then the model card's recommendation, then the user's per-model override."""
+    out: dict[str, Any] = {"temperature": llm.temperature}
+    for key in ("top_p", "top_k", "min_p"):
+        if getattr(llm, key) is not None:
+            out[key] = getattr(llm, key)
+    if llm.repeat_penalty != 1.0:
+        out["repeat_penalty"] = llm.repeat_penalty
+    out.update({k: v for k, v in (spec.sampling or {}).items() if k in SAMPLING_KEYS})
+    out.update({k: v for k, v in (llm.sampling.get(spec.id) or {}).items() if k in SAMPLING_KEYS})
+    if "top_k" in out:
+        out["top_k"] = int(out["top_k"])
+    return out
+
+
+class LoopGuard:
+    """Detects degenerate output: the last chunk of text already occurred many times just before."""
+
+    def __init__(self, window: int = 4000, probe: int = 48, repeats: int = 6) -> None:
+        self.window, self.probe, self.repeats = window, probe, repeats
+        self._checked = 0
+
+    def looping(self, text: str) -> bool:
+        if len(text) - self._checked < 200 or len(text) < self.probe * self.repeats:
+            return False
+        self._checked = len(text)
+        tail = text[-self.probe:]
+        return len(tail.strip()) > 8 and text[-self.window:].count(tail) >= self.repeats
+
+    def trim(self, text: str) -> str:
+        first = text.find(text[-self.probe:])
+        return text[: first + self.probe] if first >= 0 else text
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -322,11 +359,12 @@ class LLMManager:
         srv = await self.ensure(role, model)
         body: dict[str, Any] = {
             "messages": messages, "stream": True, "stream_options": {"include_usage": True},
-            "temperature": self.settings.llm.temperature if temperature is None else temperature,
             "max_tokens": max_tokens or self.settings.llm.max_output_tokens,
+            **sampling_params(self.settings.llm, srv.inst.spec),
         }
-        if self.settings.llm.repeat_penalty != 1.0:
-            body["repeat_penalty"] = self.settings.llm.repeat_penalty
+        if temperature is not None:
+            body["temperature"] = temperature
+        guard = LoopGuard() if self.settings.llm.loop_guard else None
         if tools:
             body["tools"] = tools
         result = ChatResult()
@@ -340,6 +378,8 @@ class LLMManager:
                             raise LLMError(f"context window exceeded ({detail})")
                         raise LLMError(f"llama-server returned HTTP {resp.status_code}: {detail}")
                     async for line in resp.aiter_lines():
+                        if result.finish_reason == "loop":
+                            break  # closing the stream makes llama-server stop generating
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
@@ -358,6 +398,11 @@ class LLMManager:
                             if delta.get("content"):
                                 result.text += delta["content"]
                                 yield "text", delta["content"]
+                                if guard and guard.looping(result.text):
+                                    result.finish_reason = "loop"
+                                    result.text = guard.trim(result.text) + "\n\n[stopped: the model kept repeating itself]"
+                                    yield "text", "\n\n[stopped: the model kept repeating itself]"
+                                    break
                             for tc in delta.get("tool_calls") or []:
                                 slot = partial.setdefault(tc.get("index", 0), {"id": "", "name": "", "args": ""})
                                 slot["id"] = tc.get("id") or slot["id"]
